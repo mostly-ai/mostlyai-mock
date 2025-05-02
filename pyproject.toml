@@ -1,0 +1,55 @@
+[project]
+name = "mostlyai-mock"
+version = "0.0.1"
+description = "Smart Mock Data Generator"
+authors = [{ name = "MOSTLY AI", email = "dev@mostly.ai" }]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "Apache-2.0"
+dependencies = [
+    "pydantic>=2.0.0,<3.0.0",
+    "numpy>=1.26.3",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+    "litellm>=1.67.0",
+]
+
+[project.urls]
+homepage = "https://github.com/mostly-ai/mostlyai-mock"
+repository = "https://github.com/mostly-ai/mostlyai-mock"
+documentation = "https://mostly-ai.github.io/mostlyai-mock/"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.11",  # sync'ed with .pre-commit-config
+    "pre-commit>=4.0",
+    "twine>=6.1",
+    "ipykernel>=6.25",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocstrings[crystal, python]>=0.29",
+    "mkdocs-material>=9.0",
+    "griffe>=1.0",
+    "pymdown-extensions>=10.0",
+    "griffe-fieldz>=0.2",
+    "black>=25.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "docs"]
+
+[tool.hatch.build.targets.sdist]
+include = ["mostlyai/mock"]
+
+[tool.hatch.build.targets.wheel]
+include = ["mostlyai/mock"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
