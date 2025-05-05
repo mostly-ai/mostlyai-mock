@@ -14,15 +14,12 @@
 
 from __future__ import annotations
 
-import datetime
 import json
 import os
-import time
-import uuid
 from collections.abc import Generator
 from enum import Enum
 from io import StringIO
-from typing import Literal, get_origin
+from typing import Literal
 
 import litellm
 import pandas as pd
@@ -42,6 +39,8 @@ if logfire_token := os.environ.get("LOGFIRE_TOKEN"):
 STREAM_MODE: bool = True
 OUTPUT_MODE: Literal["csv", "json"] = "csv"
 
+SYSTEM_PROMPT_JSON = "Return well-formatted JSON output that can be directly parsed. Don't use markdown formatting."
+SYSTEM_PROMPT_CSV = "Return well-formatted CSV output that can be directly parsed. Always include a header row. Don't use markdown formatting."
 SYSTEM_PROMPT = f"""
 You are a specialized synthetic data generator designed to create
 highly realistic, contextually appropriate data based on schema definitions. Your task is to:
@@ -51,7 +50,7 @@ highly realistic, contextually appropriate data based on schema definitions. You
 3. Create contextually appropriate values that reflect real-world patterns and distributions
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
-6. Return well-formatted {OUTPUT_MODE.upper()} outputs that can be directly parsed. Don't use markdown formatting.
+6. {SYSTEM_PROMPT_JSON if OUTPUT_MODE == "json" else SYSTEM_PROMPT_CSV}
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
 appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
@@ -191,10 +190,7 @@ def _create_table_prompt(
 
     # add columns specifications
     prompt += "## Columns Specifications:\n\n"
-    column_specs = {}
-    for column, column_config in columns.items():
-        column_specs[column] = {"description": column_config.prompt, "type": column_config.dtype}
-    prompt += f"{json.dumps(column_specs, indent=2)}\n\n"
+    prompt += f"{json.dumps({name: config.model_dump() for name, config in columns.items()}, indent=2)}\n\n"
 
     # define foreign keys
     if foreign_keys is not None:
@@ -216,10 +212,23 @@ def _create_table_prompt(
     if batch_size is not None:
         prompt += f"Generate {batch_size} rows for the `{table_name}` table.\n\n"
     else:
-        prompt += f"Generate rows for the `{table_name}` table. The foreign key column may only contain ids from Context Foreign Key Data.\n\n"
+        prompt += (
+            f"Generate rows for the `{table_name}` table. "
+            f"The foreign key column may only contain ids from Context Foreign Key Data.\n\n"
+        )
     if previous_rows:
-        prompt += "Generate new rows that maintain consistency with the previous rows where appropriate, but don't pay too much attention to number of previous rows.\n\n"
-    prompt += f"Do not use code to generate the data. Return the full data as a {OUTPUT_MODE.upper()} string.\n"
+        prompt += (
+            "Generate new rows that maintain consistency with the previous rows where appropriate. "
+            "Don't pay too much attention to the number of previous rows.\n\n"
+        )
+    prompt += f"Do not use code to generate the data.\n\n"
+    if OUTPUT_MODE == "json":
+        prompt += f"Return the full data as a JSON string.\n"
+    else:
+        prompt += (
+            f"Return the full data as a CSV string with a header row. "
+            f"Header row is:\n{','.join(columns.keys())}\n"
+        )
 
     return prompt
 
@@ -255,7 +264,7 @@ def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    def yield_rows_from_json_chunks_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
+    def yield_rows_from_json_chunks_stream(stream: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
         rows_json_started = False
@@ -286,11 +295,15 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
-    def yield_rows_from_csv_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
+    def yield_rows_from_json_response(response: litellm.ModelResponse, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+        rows = json.loads(response.choices[0].message.content)["rows"]
+        return iter(rows)
+
+    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]) -> Generator[dict]:
         buffer = ""
         in_header_row = True
-        header_row = None
-        for chunk in stream:
+        header_row = ",".join(columns.keys()) + "\n"
+        for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta is None:
                 continue
@@ -298,15 +311,24 @@ def _create_table_rows_generator(
                 buffer += char
                 if char == "\n" and in_header_row:
                     # end of header row
-                    header_row = buffer
                     buffer = ""
                     in_header_row = False
                 elif char == "\n" and not in_header_row:
                     # end of data row
-                    assert header_row is not None
                     df = pd.read_csv(StringIO(header_row + buffer))
                     yield df.to_dict(orient="records")[0]
                     buffer = ""
+
+    def yield_rows_from_csv_response(response: litellm.ModelResponse, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+        def replace_header_row(llm_output: str, column_names: list[str]) -> str:
+            lines = llm_output.split("\n")
+            lines[0] = ",".join(column_names)
+            return "\n".join(lines)
+
+        llm_output = response.choices[0].message.content
+        llm_output = replace_header_row(llm_output, columns.keys())
+        rows = json.loads(pd.read_csv(StringIO(llm_output)).to_json(orient="records"))
+        return iter(rows)
 
     def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
         while True:
@@ -354,18 +376,13 @@ def _create_table_rows_generator(
 
         litellm_result = litellm.completion(messages=messages, **litellm_kwargs)
 
-        if STREAM_MODE:
-            if OUTPUT_MODE == "json":
-                rows_stream = yield_rows_from_json_chunks_stream(litellm_result)
-            elif OUTPUT_MODE == "csv":
-                rows_stream = yield_rows_from_csv_stream(litellm_result)
-        else:
-            llm_output = litellm_result.choices[0].message.content
-            if OUTPUT_MODE == "json":
-                rows = json.loads(llm_output)["rows"]
-            elif OUTPUT_MODE == "csv":
-                rows = json.loads(pd.read_csv(StringIO(llm_output)).to_json(orient="records"))
-            rows_stream = iter(rows)
+        response_handlers = {
+            ("json", True): yield_rows_from_json_chunks_stream,
+            ("json", False): yield_rows_from_json_response,
+            ("csv", True): yield_rows_from_csv_chunks_stream,
+            ("csv", False): yield_rows_from_csv_response,
+        }
+        rows_stream = response_handlers[(OUTPUT_MODE, STREAM_MODE)](litellm_result, table_config.columns)
 
         batch_rows = []
         while True:
