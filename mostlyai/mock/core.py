@@ -136,6 +136,7 @@ def _sample_table(
     *,
     table_name: str,
     table_config: TableConfig,
+    primary_keys: dict[str, str] | None,
     sample_size: int | None,
     context_data: pd.DataFrame | None,
     temperature: float,
@@ -152,6 +153,7 @@ def _sample_table(
     table_rows_generator = _create_table_rows_generator(
         table_name=table_name,
         table_config=table_config,
+        primary_keys=primary_keys,
         sample_size=sample_size,
         context_data=context_data,
         temperature=temperature,
@@ -170,6 +172,7 @@ def _create_table_prompt(
     table_name: str,
     table_description: str,
     columns: dict[str, ColumnConfig],
+    primary_keys: dict[str, str] | None,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
     context_data: pd.DataFrame | None,
@@ -181,6 +184,7 @@ def _create_table_prompt(
     else:
         assert foreign_keys is not None
         assert context_data is not None
+        assert primary_keys is not None
 
     # add description
     prompt = f"# {table_description}\n\n"
@@ -197,15 +201,20 @@ def _create_table_prompt(
         prompt += "## Foreign Keys:\n\n"
         prompt += f"{json.dumps([fk.model_dump() for fk in foreign_keys], indent=2)}\n\n"
 
-    # add context key data
-    if context_data is not None:
-        prompt += "## Context Foreign Key Data:\n\n"
-        prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
-
     # add previous rows as context to help the LLM generate consistent data
     if previous_rows:
         prompt += "\n## Previous Rows:\n\n"
         prompt += json.dumps(previous_rows, indent=2)
+
+    # add context table name, primary key and data
+    if context_data is not None:
+        fk = foreign_keys[0]
+        prompt += f"## Context Table: `{fk.referenced_table}`\n\n"
+
+        prompt += f"## Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
+
+        prompt += f"## Context Table Data:\n\n"
+        prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
@@ -214,7 +223,7 @@ def _create_table_prompt(
     else:
         prompt += (
             f"Generate rows for the `{table_name}` table. "
-            f"The foreign key column may only contain ids from Context Foreign Key Data.\n\n"
+            f"The Foreign Key column may only contain values from Context Table Data.\n\n"
         )
     if previous_rows:
         prompt += (
@@ -236,6 +245,7 @@ def _create_table_rows_generator(
     *,
     table_name: str,
     table_config: TableConfig,
+    primary_keys: dict[str, str] | None,
     sample_size: int,
     temperature: float,
     top_p: float,
@@ -373,6 +383,7 @@ def _create_table_rows_generator(
             "table_name": table_name,
             "table_description": table_config.description,
             "columns": table_config.columns,
+            "primary_keys": primary_keys,
             "batch_size": batch_size if context_batch is None else None,
             "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
             "context_data": context_batch if context_batch is not None else None,
@@ -527,7 +538,7 @@ def sample(
         },
     }
     data = mock.sample(tables=tables, sample_size=5)
-    df_guests = data["guest"]
+    df_guests = data["guests"]
     df_purchases = data["purchases"]
     ```
     """
@@ -535,7 +546,7 @@ def sample(
     config = MockConfig(tables)
 
     sample_size = _harmonize_sample_size(sample_size, config)
-
+    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
     dfs = {}
     for table_name, table_config in config.root.items():
         if len(dfs) == 0:
@@ -543,6 +554,7 @@ def sample(
             df = _sample_table(
                 table_name=table_name,
                 table_config=table_config,
+                primary_keys=None,
                 sample_size=sample_size[table_name],
                 context_data=None,
                 temperature=temperature,
@@ -556,6 +568,7 @@ def sample(
             df = _sample_table(
                 table_name=table_name,
                 table_config=table_config,
+                primary_keys=primary_keys,
                 sample_size=None,
                 context_data=next(iter(dfs.values())),
                 temperature=temperature,
