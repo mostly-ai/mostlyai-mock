@@ -20,6 +20,7 @@ import os
 import time
 import uuid
 from collections.abc import Generator
+from enum import Enum
 from io import StringIO
 from typing import Literal, get_origin
 
@@ -63,19 +64,7 @@ class LLMConfig(BaseModel):
     api_key: str | None = None
 
 
-class ForeignKeyConfig(BaseModel):
-    column: str
-    referenced_table: str
-    description: str | None = None
-
-
-class TableConfig(BaseModel):
-    data_schema: type[BaseModel]
-    primary_key: str | None = None
-    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list, min_length=0, max_length=1)
-
-
-class MockConfig(RootModel[dict[str, TableConfig]]):
+class MockConfig(RootModel[dict[str, "TableConfig"]]):
     root: dict[str, TableConfig] = Field(..., min_items=1)
 
     @field_validator("root")
@@ -99,22 +88,49 @@ class MockConfig(RootModel[dict[str, TableConfig]]):
                         f"Referenced table '{fk.referenced_table}' has no primary key defined"
                     )
 
-                if fk.column not in table_config.data_schema.model_fields:
+                if fk.column not in table_config.columns:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
                         f"Column '{fk.column}' does not exist in the schema"
                     )
 
-                fk_field = table_config.data_schema.model_fields[fk.column]
-                pk_field = referenced_config.data_schema.model_fields[referenced_config.primary_key]
-                if fk_field.annotation != pk_field.annotation:
+                fk_field = table_config.columns[fk.column]
+                pk_field = referenced_config.columns[referenced_config.primary_key]
+                if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
-                        f"Column '{fk.column}' type '{fk_field.annotation}' does not match "
-                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.annotation}'"
+                        f"Column '{fk.column}' type '{fk_field.dtype}' does not match "
+                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.dtype}'"
                     )
 
         return tables
+
+
+class TableConfig(BaseModel):
+    description: str = ""
+    columns: dict[str, ColumnConfig] = Field(..., min_items=1)
+    primary_key: str | None = None
+    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list, min_length=0, max_length=1)
+
+
+class ColumnConfig(BaseModel):
+    prompt: str
+    dtype: DType
+
+
+class DType(str, Enum):
+    INTEGER = "integer"
+    FLOAT = "float"
+    STRING = "string"
+    BOOLEAN = "boolean"
+    DATE = "date"
+    DATETIME = "datetime"
+
+
+class ForeignKeyConfig(BaseModel):
+    column: str
+    referenced_table: str
+    description: str | None = None
 
 
 def _sample_table(
@@ -153,7 +169,8 @@ def _sample_table(
 def _create_table_prompt(
     *,
     table_name: str,
-    table_schema: type[BaseModel],
+    table_description: str,
+    columns: dict[str, ColumnConfig],
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
     context_data: pd.DataFrame | None,
@@ -166,8 +183,6 @@ def _create_table_prompt(
         assert foreign_keys is not None
         assert context_data is not None
 
-    table_description = table_schema.__doc__
-
     # add description
     prompt = f"# {table_description}\n\n"
 
@@ -177,8 +192,8 @@ def _create_table_prompt(
     # add columns specifications
     prompt += "## Columns Specifications:\n\n"
     column_specs = {}
-    for column, column_spec in table_schema.model_json_schema()["properties"].items():
-        column_specs[column] = {"description": column_spec.get("description", ""), "type": column_spec.get("type", "")}
+    for column, column_config in columns.items():
+        column_specs[column] = {"description": column_config.prompt, "type": column_config.dtype}
     prompt += f"{json.dumps(column_specs, indent=2)}\n\n"
 
     # define foreign keys
@@ -221,21 +236,22 @@ def _create_table_rows_generator(
     previous_rows_size: int,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
-    def create_table_response_format(table_schema: type[BaseModel]) -> BaseModel:
-        def create_compatible_pydantic_model(model: type[BaseModel]) -> type[BaseModel]:
-            # response_format has limited support for pydantic features
-            # so we need to convert the model to a compatible one
-            # - date / time / datetime / UUID -> str
-            # - remove any constraints (e.g. gt/ge/lt/le)
-            fields = {}
-            for field_name, field in model.model_fields.items():
-                annotation = field.annotation
-                if field.annotation in [datetime.date, datetime.time, datetime.datetime, uuid.UUID]:
-                    annotation = str
-                fields[field_name] = (annotation, Field(...))
-            return create_model("TableRow", **fields)
-
-        TableRow = create_compatible_pydantic_model(table_schema)
+    def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
+        dtype_to_pydantic_type = {
+            DType.INTEGER: int,
+            DType.FLOAT: float,
+            DType.STRING: str,
+            DType.BOOLEAN: bool,
+            # response_format has limited support for JSON Schema features
+            # thus we represent dates and datetimes as strings
+            DType.DATE: str,
+            DType.DATETIME: str,
+        }
+        fields = {}
+        for column_name, column_config in columns.items():
+            annotation = dtype_to_pydantic_type[column_config.dtype]
+            fields[column_name] = (annotation, Field(...))
+        TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
@@ -308,7 +324,7 @@ def _create_table_rows_generator(
         # ensure json schema is supported
         assert litellm.supports_response_schema(llm_config.model)
 
-        response_format = create_table_response_format(table_schema=table_config.data_schema)
+        response_format = create_table_response_format(columns=table_config.columns)
     else:
         response_format = None
 
@@ -326,7 +342,8 @@ def _create_table_rows_generator(
     for context_batch in batch_infinitely(context_data):
         prompt_kwargs = {
             "table_name": table_name,
-            "table_schema": table_config.data_schema,
+            "table_description": table_config.description,
+            "columns": table_config.columns,
             "batch_size": batch_size if context_batch is None else None,
             "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
             "context_data": context_batch if context_batch is not None else None,
@@ -375,30 +392,24 @@ def _create_table_rows_generator(
 def _convert_table_rows_generator_to_df(
     table_rows_generator: Generator[dict], table_config: TableConfig
 ) -> pd.DataFrame:
-    def coerce_pandas_dtypes_to_pydantic_model(df: pd.DataFrame, model: type[BaseModel]) -> pd.DataFrame:
-        for field_name, field in model.model_fields.items():
-            if field.annotation in [datetime.date, datetime.datetime]:
+    def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
+        for column_name, column_config in columns.items():
+            if column_config.dtype in [DType.DATE, DType.DATETIME]:
                 # datetime.date, datetime.datetime -> datetime64[ns] / datetime64[ns, tz]
-                df[field_name] = pd.to_datetime(df[field_name], errors="coerce")
-            elif field.annotation is datetime.time:
-                # datetime.time -> object
-                df[field_name] = pd.to_datetime(df[field_name], format="%H:%M:%S", errors="coerce").dt.time
-            elif field.annotation in [int, float]:
+                df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
+            elif column_config.dtype in [DType.INTEGER, DType.FLOAT]:
                 # int -> int64[pyarrow], float -> double[pyarrow]
-                df[field_name] = pd.to_numeric(df[field_name], errors="coerce", dtype_backend="pyarrow")
-            elif field.annotation is bool:
+                df[column_name] = pd.to_numeric(df[column_name], errors="coerce", dtype_backend="pyarrow")
+            elif column_config.dtype is DType.BOOLEAN:
                 # bool -> bool
-                df[field_name] = df[field_name].astype(bool)
-            elif get_origin(field.annotation) == Literal:
-                # Literal -> category
-                df[field_name] = pd.Categorical(df[field_name])
+                df[column_name] = df[column_name].astype(bool)
             else:
                 # other -> string[pyarrow]
-                df[field_name] = df[field_name].astype("string[pyarrow]")
+                df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
     df = pd.DataFrame(list(table_rows_generator))
-    df = coerce_pandas_dtypes_to_pydantic_model(df, table_config.data_schema)
+    df = align_df_dtypes_with_mock_dtypes(df, table_config.columns)
     return df
 
 
@@ -441,58 +452,54 @@ def sample(
 
     Example of single table (without PK):
     ```python
-    import datetime
-    from pydantic import BaseModel, Field
-    from typing import Literal
     from mostlyai import mock
-
-    class Guest(BaseModel):
-        '''Guests of an Alpine ski hotel in Austria'''
-
-        nationality: str = Field(description="2-letter code for the nationality")
-        name: str = Field(description="first name and last name of the guest")
-        gender: Literal["male", "female"]
-        age: int = Field(description="age in years; min: 18, max: 80; avg: 25")
-        date_of_birth: datetime.date = Field(description="date of birth")
-        checkin_time: datetime.datetime = Field(description="the check in timestamp of the guest; may 2025")
-        is_vip: bool = Field(description="is the guest a VIP")
-        price_per_night: float = Field(description="price paid per night, in EUR")
 
     tables = {
         "guests": {
-            "data_schema": Guest,
-        }
+            "description": "Guests of an Alpine ski hotel in Austria",
+            "columns": {
+                "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
+                "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+                "gender": {"prompt": "gender of the guest; male or female", "dtype": "string"},
+                "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
+                "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
+                "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
+                "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
+                "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
+            },
+        }   
     }
     df = mock.sample(tables=tables, sample_size=10)
     ```
 
     Example of multiple tables (with PK/FK relationships):
     ```python
-    from pydantic import BaseModel, Field
     from mostlyai import mock
 
-    class Guest(BaseModel):
-        '''Guests of an Alpine ski hotel in Austria'''
-
-        id: int = Field(description="the unique id of the guest")
-        name: str = Field(description="first name and last name of the guest")
-
-    class Purchases(BaseModel):
-        '''Purchases of a Guest during their stay'''
-
-        guest_id: int = Field(description="the guest id for that purchase")
-        purchase_id: str = Field(description="the unique id of the purchase")
-        text: str = Field(description="purchase text description")
-        amount: float = Field(description="purchase amount in EUR")
-
     tables = {
-        "guest": {
-            "data_schema": Guest,
+        "guests": {
+            "description": "Guests of an Alpine ski hotel in Austria",
+            "columns": {
+                "id": {"prompt": "the unique id of the guest", "dtype": "integer"},
+                "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+            },
             "primary_key": "id",
         },
         "purchases": {
-            "data_schema": Purchases,
-            "foreign_keys": [{"column": "guest_id", "referenced_table": "guest", "description": "each guest has anywhere between 1 and 10 purchases"}],
+            "description": "Purchases of a Guest during their stay",
+            "columns": {
+                "guest_id": {"prompt": "the guest id for that purchase", "dtype": "integer"},
+                "purchase_id": {"prompt": "the unique id of the purchase", "dtype": "string"},
+                "text": {"prompt": "purchase text description", "dtype": "string"},
+                "amount": {"prompt": "purchase amount in EUR", "dtype": "float"},
+            },
+            "foreign_keys": [
+                {
+                    "column": "guest_id",
+                    "referenced_table": "guests",
+                    "description": "each guest has anywhere between 1 and 10 purchases",
+                }
+            ],
         },
     }
     data = mock.sample(tables=tables, sample_size=5)
