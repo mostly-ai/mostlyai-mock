@@ -226,8 +226,7 @@ def _create_table_prompt(
         prompt += f"Return the full data as a JSON string.\n"
     else:
         prompt += (
-            f"Return the full data as a CSV string with a header row. "
-            f"Header row is:\n{','.join(columns.keys())}\n"
+            f"Return the full data as a CSV string with a header row. Header row is:\n{','.join(columns.keys())}\n"
         )
 
     return prompt
@@ -264,7 +263,9 @@ def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    def yield_rows_from_json_chunks_stream(stream: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+    def yield_rows_from_json_chunks_stream(
+        stream: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]
+    ) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
         rows_json_started = False
@@ -295,11 +296,15 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
-    def yield_rows_from_json_response(response: litellm.ModelResponse, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+    def yield_rows_from_json_response(
+        response: litellm.ModelResponse, columns: dict[str, ColumnConfig]
+    ) -> Generator[dict]:
         rows = json.loads(response.choices[0].message.content)["rows"]
         return iter(rows)
 
-    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+    def yield_rows_from_csv_chunks_stream(
+        response: litellm.CustomStreamWrapper, columns: dict[str, ColumnConfig]
+    ) -> Generator[dict]:
         buffer = ""
         in_header_row = True
         header_row = ",".join(columns.keys()) + "\n"
@@ -319,7 +324,9 @@ def _create_table_rows_generator(
                     yield df.to_dict(orient="records")[0]
                     buffer = ""
 
-    def yield_rows_from_csv_response(response: litellm.ModelResponse, columns: dict[str, ColumnConfig]) -> Generator[dict]:
+    def yield_rows_from_csv_response(
+        response: litellm.ModelResponse, columns: dict[str, ColumnConfig]
+    ) -> Generator[dict]:
         def replace_header_row(llm_output: str, column_names: list[str]) -> str:
             lines = llm_output.split("\n")
             lines[0] = ",".join(column_names)
@@ -484,7 +491,7 @@ def sample(
                 "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
                 "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
             },
-        }   
+        }
     }
     df = mock.sample(tables=tables, sample_size=10)
     ```
