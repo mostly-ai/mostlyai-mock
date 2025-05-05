@@ -19,13 +19,15 @@ import json
 import os
 import time
 import uuid
-from typing import Literal, get_origin
-from collections.abc import Generator
+import asyncio
+from typing import Literal, get_origin, Any
+from collections.abc import Generator, AsyncGenerator
 
 import litellm
 import pandas as pd
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator
 from tqdm import tqdm
+from tqdm.asyncio import tqdm_asyncio
 
 # configure logfire if installed and LOGFIRE_TOKEN is set
 if logfire_token := os.environ.get("LOGFIRE_TOKEN"):
@@ -113,7 +115,7 @@ class MockConfig(RootModel[dict[str, TableConfig]]):
         return tables
 
 
-def _sample_table(
+async def _sample_table(
     *,
     table_name: str,
     table_config: TableConfig,
@@ -124,6 +126,7 @@ def _sample_table(
     batch_size: int,
     previous_rows_size: int,
     llm_config: LLMConfig,
+    concurrency: int = 3,
 ) -> pd.DataFrame:
     assert (sample_size is None) != (context_data is None), (
         "Exactly one of sample_size or context_data must be provided"
@@ -140,9 +143,10 @@ def _sample_table(
         batch_size=batch_size,
         previous_rows_size=previous_rows_size,
         llm_config=llm_config,
+        concurrency=concurrency,
     )
-    table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{table_name}`".ljust(45))
-    table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, table_config=table_config)
+    table_rows_generator = tqdm_asyncio(table_rows_generator, desc=f"Generating rows for table `{table_name}`".ljust(45))
+    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, table_config=table_config)
     return table_df
 
 
@@ -202,7 +206,7 @@ def _create_table_prompt(
     return prompt
 
 
-def _create_table_rows_generator(
+async def _create_table_rows_generator(
     *,
     table_name: str,
     table_config: TableConfig,
@@ -213,7 +217,8 @@ def _create_table_rows_generator(
     batch_size: int,
     previous_rows_size: int,
     llm_config: LLMConfig,
-) -> Generator[dict]:
+    concurrency: int = 3,
+) -> AsyncGenerator[dict, None]:
     def create_table_response_format(table_schema: type[BaseModel]) -> BaseModel:
         def create_compatible_pydantic_model(model: type[BaseModel]) -> type[BaseModel]:
             # response_format has limited support for pydantic features
@@ -232,12 +237,12 @@ def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    def yield_rows_from_chunks_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
+    async def yield_rows_from_chunks_stream(stream: litellm.CustomStreamWrapper) -> AsyncGenerator[dict, None]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
         rows_json_started = False
         in_row_json = False
-        for chunk in stream:
+        async for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta is None:
                 continue
@@ -263,13 +268,10 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
-    def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
-        while True:
-            if data is None:
-                yield None
-            else:
-                for i in range(0, len(data), batch_size):
-                    yield data.iloc[i : i + batch_size]
+    def batch_data(data: pd.DataFrame | None) -> list[pd.DataFrame | None]:
+        if data is None:
+            return [None]
+        return [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
 
     # ensure model supports response_format
     supported_params = litellm.get_supported_openai_params(model=llm_config.model)
@@ -289,45 +291,72 @@ def _create_table_rows_generator(
 
     yielded_sequences = 0
     previous_rows = []
-    for context_batch in batch_infinitely(context_data):
-        prompt_kwargs = {
-            "table_name": table_name,
-            "table_schema": table_config.data_schema,
-            "batch_size": batch_size if context_batch is None else None,
-            "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
-            "context_data": context_batch if context_batch is not None else None,
-            "previous_rows": previous_rows,
-        }
-        prompt = _create_table_prompt(**prompt_kwargs)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
-
-        litellm_result = litellm.completion(messages=messages, **litellm_kwargs)
-        rows_stream = yield_rows_from_chunks_stream(litellm_result)
-
-        batch_rows = []
-        while True:
-            try:
-                row = next(rows_stream)
-            except StopIteration:
-                break  # move to next batch
-            batch_rows.append(row)
-            yield row
-            if context_batch is None:
-                # each subject row is considered a single sequence
-                yielded_sequences += 1
+    
+    # Prepare batches of data
+    if context_data is None:
+        # For subject table, create batches of None until we reach sample_size
+        num_batches = (sample_size + batch_size - 1) // batch_size  # Ceiling division
+        batches = [None] * num_batches
+    else:
+        # For sequence table, batch the context data
+        batches = batch_data(context_data)
+    
+    semaphore = asyncio.Semaphore(concurrency)
+    
+    async def process_batch(batch_idx, context_batch):
+        async with semaphore:
+            prompt_kwargs = {
+                "table_name": table_name,
+                "table_schema": table_config.data_schema,
+                "batch_size": batch_size if context_batch is None else None,
+                "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
+                "context_data": context_batch if context_batch is not None else None,
+                "previous_rows": previous_rows,
+            }
+            prompt = _create_table_prompt(**prompt_kwargs)
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+            
+            litellm_result = await litellm.acompletion(messages=messages, **litellm_kwargs)
+            rows_stream = yield_rows_from_chunks_stream(litellm_result)
+            
+            batch_rows = []
+            async for row in rows_stream:
+                batch_rows.append(row)
+                
+            return batch_rows, context_batch
+    
+    batch_tasks = []
+    for batch_idx, context_batch in enumerate(batches):
+        if yielded_sequences >= sample_size:
+            break
+        batch_tasks.append(process_batch(batch_idx, context_batch))
+        
+        # Process concurrent batches in chunks to keep memory usage under control
+        if len(batch_tasks) >= concurrency or batch_idx == len(batches) - 1:
+            batch_results = await asyncio.gather(*batch_tasks)
+            batch_tasks = []
+            
+            for batch_rows, context_batch in batch_results:
+                for row in batch_rows:
+                    if yielded_sequences < sample_size:
+                        yield row
+                        if context_batch is None:
+                            # each subject row is considered a single sequence
+                            yielded_sequences += 1
+                
+                if context_batch is not None:
+                    # for each context_batch, full sequences are generated
+                    yielded_sequences += len(context_batch)
+                
+                # Update previous_rows for future batches
+                if batch_rows:
+                    previous_rows = batch_rows[:previous_rows_size]
+                
                 if yielded_sequences >= sample_size:
-                    return  # move to next table
-        if context_batch is not None:
-            # for each context_batch, full sequences are generated
-            yielded_sequences += len(context_batch)
-            if yielded_sequences >= sample_size:
-                return  # move to next table
+                    break
 
-        previous_rows = batch_rows[:previous_rows_size]
-
-
-def _convert_table_rows_generator_to_df(
-    table_rows_generator: Generator[dict], table_config: TableConfig
+async def _convert_table_rows_generator_to_df(
+    table_rows_generator: AsyncGenerator[dict, None], table_config: TableConfig
 ) -> pd.DataFrame:
     def coerce_pandas_dtypes_to_pydantic_model(df: pd.DataFrame, model: type[BaseModel]) -> pd.DataFrame:
         for field_name, field in model.model_fields.items():
@@ -351,7 +380,11 @@ def _convert_table_rows_generator_to_df(
                 df[field_name] = df[field_name].astype("string[pyarrow]")
         return df
 
-    df = pd.DataFrame(list(table_rows_generator))
+    rows = []
+    async for row in table_rows_generator:
+        rows.append(row)
+    
+    df = pd.DataFrame(rows)
     df = coerce_pandas_dtypes_to_pydantic_model(df, table_config.data_schema)
     return df
 
@@ -365,6 +398,77 @@ def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig
     return sample_size
 
 
+async def sample_async(
+    *,
+    tables: dict[str, dict],
+    sample_size: int | dict[str, int] = 10,
+    model: str = "openai/gpt-4.1-nano",
+    api_key: str | None = None,
+    temperature: float = 1.0,
+    top_p: float = 0.95,
+    concurrency: int = 3,
+) -> pd.DataFrame | dict[str, pd.DataFrame]:
+    """
+    Asynchronously generate mock data by prompting an LLM with multiple concurrent requests.
+
+    Args:
+        tables (dict[str, dict]): The table specifications to generate mock data for. See examples for usage.
+        sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
+            If a single integer is provided, the same number of rows will be generated for each subject table.
+            If a dictionary is provided, the number of rows to generate for each subject table can be specified
+            individually.
+            Default is 10.
+        model (str): The model to use for the LLM. Default is "openai/gpt-4.1-nano". This will be passed to LiteLLM.
+        api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
+        temperature (float): The temperature to use for the LLM. Default is 1.0.
+        top_p (float): The top-p value to use for the LLM. Default is 0.95.
+        concurrency (int): The number of concurrent LLM calls. Default is 3.
+
+    Returns:
+        - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
+        - dict[str, pd.DataFrame]: A dictionary containing the generated mock data for each table, if multiple tables are provided.
+    """
+
+    config = MockConfig(tables)
+
+    sample_size = _harmonize_sample_size(sample_size, config)
+
+    dfs = {}
+    for table_name, table_config in config.root.items():
+        if len(dfs) == 0:
+            # subject table
+            df = await _sample_table(
+                table_name=table_name,
+                table_config=table_config,
+                sample_size=sample_size[table_name],
+                context_data=None,
+                temperature=temperature,
+                top_p=top_p,
+                batch_size=20,  # generate 20 subjects at a time
+                previous_rows_size=5,
+                llm_config=LLMConfig(model=model, api_key=api_key),
+                concurrency=concurrency,
+            )
+        elif len(dfs) == 1:
+            # sequence table
+            df = await _sample_table(
+                table_name=table_name,
+                table_config=table_config,
+                sample_size=None,
+                context_data=next(iter(dfs.values())),
+                temperature=temperature,
+                top_p=top_p,
+                batch_size=1,  # generate one sequence at a time
+                previous_rows_size=5,
+                llm_config=LLMConfig(model=model, api_key=api_key),
+                concurrency=concurrency,
+            )
+        else:
+            raise RuntimeError("Only 1 or 2 table setups are supported for now")
+        dfs[table_name] = df
+
+    return dfs if len(dfs) > 1 else next(iter(dfs.values()))
+
 def sample(
     *,
     tables: dict[str, dict],
@@ -373,7 +477,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
-    
+    concurrency: int = 3,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate mock data by prompting an LLM.
@@ -389,13 +493,23 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
+        concurrency (int): The number of concurrent LLM calls. Default is 3.
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
         - dict[str, pd.DataFrame]: A dictionary containing the generated mock data for each table, if multiple tables are provided.
+    """
+    return asyncio.run(sample_async(
+        tables=tables,
+        sample_size=sample_size,
+        model=model,
+        api_key=api_key,
+        temperature=temperature,
+        top_p=top_p,
+        concurrency=concurrency,
+    ))
 
-    Example of single table (without PK):
-    ```python
+if __name__ == "__main__":
     import datetime
     from pydantic import BaseModel, Field
     from typing import Literal
@@ -418,78 +532,8 @@ def sample(
             "data_schema": Guest,
         }
     }
-    df = mock.sample(tables=tables, sample_size=10)
-    ```
-
-    Example of multiple tables (with PK/FK relationships):
-    ```python
-    from pydantic import BaseModel, Field
-    from mostlyai import mock
-
-    class Guest(BaseModel):
-        '''Guests of an Alpine ski hotel in Austria'''
-
-        id: int = Field(description="the unique id of the guest")
-        name: str = Field(description="first name and last name of the guest")
-        
-    class Purchases(BaseModel):
-        '''Purchases of a Guest during their stay'''
-
-        guest_id: int = Field(description="the guest id for that purchase")
-        purchase_id: str = Field(description="the unique id of the purchase")
-        text: str = Field(description="purchase text description")
-        amount: float = Field(description="purchase amount in EUR")
-
-    tables = {
-        "guest": {
-            "data_schema": Guest,
-            "primary_key": "id",
-        },
-        "purchases": {
-            "data_schema": Purchases,
-            "foreign_keys": [{"column": "guest_id", "referenced_table": "guest", "description": "each guest has anywhere between 1 and 5 purchases"}],
-        },
-    }
-    data = mock.sample(tables=tables, sample_size=5)
-    df_guests = data["guest"]
-    df_purchases = data["purchases"]
-    ```
-    """
-
-    config = MockConfig(tables)
-
-    sample_size = _harmonize_sample_size(sample_size, config)
-
-    dfs = {}
-    for table_name, table_config in config.root.items():
-        if len(dfs) == 0:
-            # subject table
-            df = _sample_table(
-                table_name=table_name,
-                table_config=table_config,
-                sample_size=sample_size[table_name],
-                context_data=None,
-                temperature=temperature,
-                top_p=top_p,
-                batch_size=20,  # generate 20 subjects at a time
-                previous_rows_size=5,
-                llm_config=LLMConfig(model=model, api_key=api_key),
-            )
-        elif len(dfs) == 1:
-            # sequence table
-            df = _sample_table(
-                table_name=table_name,
-                table_config=table_config,
-                sample_size=None,
-                context_data=next(iter(dfs.values())),
-                temperature=temperature,
-                top_p=top_p,
-                batch_size=1,  # generate one sequence at a time
-                previous_rows_size=5,
-                llm_config=LLMConfig(model=model, api_key=api_key),
-            )
-        else:
-            raise RuntimeError("Only 1 or 2 table setups are supported for now")
-        dfs[table_name] = df
-
-    return dfs if len(dfs) > 1 else next(iter(dfs.values()))
+    t0 = time.time()
+    df = mock.sample(tables=tables, sample_size=100, concurrency=5)
+    t1 = time.time()
+    print(f"Time taken: {t1 - t0} seconds")
+    print(df)
