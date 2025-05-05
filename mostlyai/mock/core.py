@@ -19,8 +19,9 @@ import json
 import os
 import time
 import uuid
-from typing import Literal, get_origin
 from collections.abc import Generator
+from io import StringIO
+from typing import Literal, get_origin
 
 import litellm
 import pandas as pd
@@ -37,7 +38,10 @@ if logfire_token := os.environ.get("LOGFIRE_TOKEN"):
     except ImportError:
         pass
 
-SYSTEM_PROMPT = """
+STREAM_MODE: bool = True
+OUTPUT_MODE: Literal["csv", "json"] = "csv"
+
+SYSTEM_PROMPT = f"""
 You are a specialized synthetic data generator designed to create
 highly realistic, contextually appropriate data based on schema definitions. Your task is to:
 
@@ -46,7 +50,7 @@ highly realistic, contextually appropriate data based on schema definitions. You
 3. Create contextually appropriate values that reflect real-world patterns and distributions
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
-6. Return well-formatted JSON outputs that can be directly parsed
+6. Return well-formatted {OUTPUT_MODE.upper()} outputs that can be directly parsed. Don't use markdown formatting.
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
 appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
@@ -172,7 +176,10 @@ def _create_table_prompt(
 
     # add columns specifications
     prompt += "## Columns Specifications:\n\n"
-    prompt += f"{json.dumps(table_schema.model_json_schema()['properties'], indent=2)}\n\n"
+    column_specs = {}
+    for column, column_spec in table_schema.model_json_schema()["properties"].items():
+        column_specs[column] = {"description": column_spec.get("description", ""), "type": column_spec.get("type", "")}
+    prompt += f"{json.dumps(column_specs, indent=2)}\n\n"
 
     # define foreign keys
     if foreign_keys is not None:
@@ -194,10 +201,10 @@ def _create_table_prompt(
     if batch_size is not None:
         prompt += f"Generate {batch_size} rows for the `{table_name}` table.\n\n"
     else:
-        prompt += f"Generate rows for the `{table_name}` table\n\n"
+        prompt += f"Generate rows for the `{table_name}` table. The foreign key column may only contain ids from Context Foreign Key Data.\n\n"
     if previous_rows:
-        prompt += "Generate new rows that maintain consistency with the previous rows where appropriate.\n\n"
-    prompt += "Do not use code to generate the data. Return the full data in the JSON array.\n"
+        prompt += "Generate new rows that maintain consistency with the previous rows where appropriate, but don't pay too much attention to number of previous rows.\n\n"
+    prompt += f"Do not use code to generate the data. Return the full data as a {OUTPUT_MODE.upper()} string.\n"
 
     return prompt
 
@@ -232,7 +239,7 @@ def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    def yield_rows_from_chunks_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
+    def yield_rows_from_json_chunks_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
         rows_json_started = False
@@ -263,6 +270,28 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
+    def yield_rows_from_csv_stream(stream: litellm.CustomStreamWrapper) -> Generator[dict]:
+        buffer = ""
+        in_header_row = True
+        header_row = None
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta is None:
+                continue
+            for char in delta:
+                buffer += char
+                if char == "\n" and in_header_row:
+                    # end of header row
+                    header_row = buffer
+                    buffer = ""
+                    in_header_row = False
+                elif char == "\n" and not in_header_row:
+                    # end of data row
+                    assert header_row is not None
+                    df = pd.read_csv(StringIO(header_row + buffer))
+                    yield df.to_dict(orient="records")[0]
+                    buffer = ""
+
     def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
         while True:
             if data is None:
@@ -271,20 +300,25 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
-    # ensure model supports response_format
-    supported_params = litellm.get_supported_openai_params(model=llm_config.model)
-    assert "response_format" in supported_params
+    if OUTPUT_MODE == "json":
+        # ensure model supports response_format
+        supported_params = litellm.get_supported_openai_params(model=llm_config.model)
+        assert "response_format" in supported_params
 
-    # ensure json schema is supported
-    assert litellm.supports_response_schema(llm_config.model)
+        # ensure json schema is supported
+        assert litellm.supports_response_schema(llm_config.model)
+
+        response_format = create_table_response_format(table_schema=table_config.data_schema)
+    else:
+        response_format = None
 
     litellm_kwargs = {
-        "response_format": create_table_response_format(table_schema=table_config.data_schema),
+        "response_format": response_format,
         "temperature": temperature,
         "top_p": top_p,
         "model": llm_config.model,
         "api_key": llm_config.api_key,
-        "stream": True,
+        "stream": STREAM_MODE,
     }
 
     yielded_sequences = 0
@@ -302,7 +336,19 @@ def _create_table_rows_generator(
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
 
         litellm_result = litellm.completion(messages=messages, **litellm_kwargs)
-        rows_stream = yield_rows_from_chunks_stream(litellm_result)
+
+        if STREAM_MODE:
+            if OUTPUT_MODE == "json":
+                rows_stream = yield_rows_from_json_chunks_stream(litellm_result)
+            elif OUTPUT_MODE == "csv":
+                rows_stream = yield_rows_from_csv_stream(litellm_result)
+        else:
+            llm_output = litellm_result.choices[0].message.content
+            if OUTPUT_MODE == "json":
+                rows = json.loads(llm_output)["rows"]
+            elif OUTPUT_MODE == "csv":
+                rows = json.loads(pd.read_csv(StringIO(llm_output)).to_json(orient="records"))
+            rows_stream = iter(rows)
 
         batch_rows = []
         while True:
@@ -373,7 +419,6 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
-    
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate mock data by prompting an LLM.
@@ -431,7 +476,7 @@ def sample(
 
         id: int = Field(description="the unique id of the guest")
         name: str = Field(description="first name and last name of the guest")
-        
+
     class Purchases(BaseModel):
         '''Purchases of a Guest during their stay'''
 
@@ -447,7 +492,7 @@ def sample(
         },
         "purchases": {
             "data_schema": Purchases,
-            "foreign_keys": [{"column": "guest_id", "referenced_table": "guest", "description": "each guest has anywhere between 1 and 5 purchases"}],
+            "foreign_keys": [{"column": "guest_id", "referenced_table": "guest", "description": "each guest has anywhere between 1 and 10 purchases"}],
         },
     }
     data = mock.sample(tables=tables, sample_size=5)
