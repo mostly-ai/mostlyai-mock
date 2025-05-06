@@ -294,7 +294,9 @@ def _create_table_rows_generator(
     # ensure model supports response_format and json schema
     supported_params = litellm.get_supported_openai_params(model=llm_config.model)
     assert "response_format" in supported_params
-    assert litellm.supports_response_schema(llm_config.model)
+    assert litellm.supports_response_schema(llm_config.model), (
+        "The model does not support structured output / JSON mode."
+    )
 
     litellm_kwargs = {
         "response_format": create_table_response_format(columns=table_config.columns),
@@ -395,7 +397,14 @@ def sample(
             If a dictionary is provided, the number of rows to generate for each subject table can be specified
             individually.
             Default is 10.
-        model (str): The model to use for the LLM. Default is "openai/gpt-4.1-nano". This will be passed to LiteLLM.
+        model (str): The LiteLLM chat completion model to be used. Requires support for structured output / JSON mode.
+            Examples include:
+            - `openai/gpt-4.1-nano` (default)
+            - `openai/gpt-4.1-mini`
+            - `openai/gpt-4.1`
+            - `gemini/gemini-2.0-flash`
+            - `gemini/gemini-2.5-flash-preview-04-17`
+            See https://docs.litellm.ai/docs/providers/ for more options.
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
