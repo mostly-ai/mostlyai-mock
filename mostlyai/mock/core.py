@@ -99,21 +99,31 @@ class TableConfig(BaseModel):
 
 class ColumnConfig(BaseModel):
     prompt: str = ""
-    dtype: DType = Field(default_factory=lambda: DType.STRING)
+    dtype: DType
     categories: list[str] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def update_string_dtype_if_categories_are_provided(self) -> ColumnConfig:
-        if self.dtype == DType.STRING and self.categories:
-            self.dtype = DType.CATEGORY
-        return self
+    @model_validator(mode="before")
+    def set_default_dtype(cls, data):
+        if isinstance(data, dict):
+            if "dtype" not in data:
+                if data.get("categories"):
+                    data["dtype"] = DType.CATEGORY
+                else:
+                    data["dtype"] = DType.STRING
+        return data
 
     @model_validator(mode='after')
     def validate_categories_are_provided_for_category_dtype(self) -> ColumnConfig:
         if self.dtype == DType.CATEGORY and not self.categories:
             raise ValueError("At least one category must be provided when dtype is 'category'")
-        
         return self
+    
+    @model_validator(mode="after")
+    def clear_categories_if_dtype_is_not_category(self) -> ColumnConfig:
+        if self.dtype != DType.CATEGORY:
+            self.categories = []
+        return self
+
 
 class DType(str, Enum):
     INTEGER = "integer"
