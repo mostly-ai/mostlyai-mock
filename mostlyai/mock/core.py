@@ -18,7 +18,7 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal, Type
 
 import litellm
 import pandas as pd
@@ -100,28 +100,49 @@ class TableConfig(BaseModel):
 class ColumnConfig(BaseModel):
     prompt: str = ""
     dtype: DType
-    categories: list[str] = Field(default_factory=list)
+    values: list[Any] = Field(default_factory=list)
 
     @model_validator(mode="before")
     def set_default_dtype(cls, data):
         if isinstance(data, dict):
             if "dtype" not in data:
-                if data.get("categories"):
+                if data.get("values"):
                     data["dtype"] = DType.CATEGORY
                 else:
                     data["dtype"] = DType.STRING
         return data
 
     @model_validator(mode="after")
-    def validate_categories_are_provided_for_category_dtype(self) -> ColumnConfig:
-        if self.dtype == DType.CATEGORY and not self.categories:
-            raise ValueError("At least one category must be provided when dtype is 'category'")
+    def ensure_values_are_unique(self) -> ColumnConfig:
+        if self.values:
+            if len(self.values) != len(set(self.values)):
+                raise ValueError("Values must be unique")
         return self
 
     @model_validator(mode="after")
-    def clear_categories_if_dtype_is_not_category(self) -> ColumnConfig:
-        if self.dtype != DType.CATEGORY:
-            self.categories = []
+    def ensure_values_are_provided_for_category_dtype(self) -> ColumnConfig:
+        if self.dtype == DType.CATEGORY and not self.values:
+            raise ValueError("At least one value must be provided when dtype is 'category'")
+        return self
+
+    @model_validator(mode="after")
+    def harmonize_values_with_dtypes(self) -> ColumnConfig:
+        if self.values:
+            cast_fn, convertible_to = {
+                DType.INTEGER: (int, "integers"),
+                DType.FLOAT: (float, "floats"),
+                DType.STRING: (str, "strings"),
+                DType.CATEGORY: (lambda c: c, "categories"),
+                DType.BOOLEAN: (bool, "booleans"),
+                DType.DATE: (str, "strings"),
+                DType.DATETIME: (str, "strings"),
+            }[self.dtype]
+            try:
+                self.values = [cast_fn(c) for c in self.values]
+            except ValueError:
+                raise ValueError(
+                    f"All values must be convertible to {convertible_to} when dtype is '{self.dtype.value}'"
+                )
         return self
 
 
@@ -259,16 +280,21 @@ def _create_table_rows_generator(
     llm_config: LLMConfig,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
+        def create_annotation(column_config: ColumnConfig, dtype: Type | None = None) -> Type:
+            annotation = Literal[tuple(column_config.values)] if column_config.values else dtype
+            assert annotation is not None
+            return annotation
+
         dtype_to_pydantic_type = {
-            DType.INTEGER: lambda _: int,
-            DType.FLOAT: lambda _: float,
-            DType.STRING: lambda _: str,
-            DType.CATEGORY: lambda column_config: Literal[tuple(column_config.categories)],
-            DType.BOOLEAN: lambda _: bool,
+            DType.INTEGER: lambda column_config: create_annotation(column_config, int),
+            DType.FLOAT: lambda column_config: create_annotation(column_config, float),
+            DType.STRING: lambda column_config: create_annotation(column_config, str),
+            DType.CATEGORY: lambda column_config: create_annotation(column_config),
+            DType.BOOLEAN: lambda column_config: create_annotation(column_config, bool),
             # response_format has limited support for JSON Schema features
             # thus we represent dates and datetimes as strings
-            DType.DATE: lambda _: str,
-            DType.DATETIME: lambda _: str,
+            DType.DATE: lambda column_config: create_annotation(column_config, str),
+            DType.DATETIME: lambda column_config: create_annotation(column_config, str),
         }
         fields = {}
         for column_name, column_config in columns.items():
@@ -383,7 +409,7 @@ def _convert_table_rows_generator_to_df(
             elif column_config.dtype is DType.BOOLEAN:
                 df[column_name] = df[column_name].astype(bool)
             elif column_config.dtype is DType.CATEGORY:
-                df[column_name] = pd.Categorical(df[column_name], categories=column_config.categories)
+                df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
             else:
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
@@ -449,7 +475,7 @@ def sample(
             "columns": {
                 "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
-                "gender": {"dtype": "category", "categories": ["male", "female"]},
+                "gender": {"dtype": "category", "values": ["male", "female"]},
                 "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
                 "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
                 "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
