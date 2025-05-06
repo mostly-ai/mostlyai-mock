@@ -367,16 +367,14 @@ def _convert_table_rows_generator_to_df(
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         for column_name, column_config in columns.items():
             if column_config.dtype in [DType.DATE, DType.DATETIME]:
-                # datetime.date, datetime.datetime -> datetime64[ns] / datetime64[ns, tz]
                 df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
             elif column_config.dtype in [DType.INTEGER, DType.FLOAT]:
-                # int -> int64[pyarrow], float -> double[pyarrow]
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce", dtype_backend="pyarrow")
             elif column_config.dtype is DType.BOOLEAN:
-                # bool -> bool
                 df[column_name] = df[column_name].astype(bool)
+            elif column_config.dtype is DType.CATEGORY:
+                df[column_name] = pd.Categorical(df[column_name], categories=column_config.categories)
             else:
-                # other -> string[pyarrow]
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
