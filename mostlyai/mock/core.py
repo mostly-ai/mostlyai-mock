@@ -481,7 +481,7 @@ def sample(
                 "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
                 "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
                 "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
-                "room_number": {"prompt": "room number", "dtype": "integer", "values": list(range(1, 20))}
+                "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]}
             },
         }
     }
