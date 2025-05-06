@@ -404,6 +404,8 @@ def sample(
             - `openai/gpt-4.1`
             - `gemini/gemini-2.0-flash`
             - `gemini/gemini-2.5-flash-preview-04-17`
+            - `groq/llama-3.3-70b-versatile`
+            - `anthropic/claude-3-7-sonnet-latest`
             See https://docs.litellm.ai/docs/providers/ for more options.
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
