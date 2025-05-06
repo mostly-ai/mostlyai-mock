@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Generator
 from enum import Enum
 
@@ -305,7 +306,7 @@ def _create_table_rows_generator(
     }
 
     yielded_sequences = 0
-    previous_rows = []
+    previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
         prompt_kwargs = {
             "table_name": table_name,
@@ -315,7 +316,7 @@ def _create_table_rows_generator(
             "batch_size": batch_size if context_batch is None else None,
             "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
             "context_data": context_batch if context_batch is not None else None,
-            "previous_rows": previous_rows,
+            "previous_rows": list(previous_rows),
         }
         prompt = _create_table_prompt(**prompt_kwargs)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
@@ -323,13 +324,12 @@ def _create_table_rows_generator(
         response = litellm.completion(messages=messages, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
 
-        batch_rows = []
         while True:
             try:
                 row = next(rows_stream)
             except StopIteration:
                 break  # move to next batch
-            batch_rows.append(row)
+            previous_rows.append(row)
             yield row
             if context_batch is None:
                 # each subject row is considered a single sequence
@@ -341,8 +341,6 @@ def _create_table_rows_generator(
             yielded_sequences += len(context_batch)
             if yielded_sequences >= sample_size:
                 return  # move to next table
-
-        previous_rows = batch_rows[:previous_rows_size]
 
 
 def _convert_table_rows_generator_to_df(
