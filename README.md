@@ -27,12 +27,13 @@ tables = {
         "columns": {
             "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
             "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
-            "gender": {"prompt": "gender of the guest; male or female", "dtype": "string"},
+            "gender": {"dtype": "category", "values": ["male", "female"]},
             "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
             "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
             "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
             "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
             "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
+            "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]}
         },
     }
 }

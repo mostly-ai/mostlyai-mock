@@ -18,10 +18,11 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
+from typing import Any, Literal, Type
 
 import litellm
 import pandas as pd
-from pydantic import BaseModel, Field, RootModel, create_model, field_validator
+from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
 SYSTEM_PROMPT = f"""
@@ -97,14 +98,59 @@ class TableConfig(BaseModel):
 
 
 class ColumnConfig(BaseModel):
-    prompt: str
+    prompt: str = ""
     dtype: DType
+    values: list[Any] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    def set_default_dtype(cls, data):
+        if isinstance(data, dict):
+            if "dtype" not in data:
+                if data.get("values"):
+                    data["dtype"] = DType.CATEGORY
+                else:
+                    data["dtype"] = DType.STRING
+        return data
+
+    @model_validator(mode="after")
+    def ensure_values_are_unique(self) -> ColumnConfig:
+        if self.values:
+            if len(self.values) != len(set(self.values)):
+                raise ValueError("Values must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_values_are_provided_for_category_dtype(self) -> ColumnConfig:
+        if self.dtype == DType.CATEGORY and not self.values:
+            raise ValueError("At least one value must be provided when dtype is 'category'")
+        return self
+
+    @model_validator(mode="after")
+    def harmonize_values_with_dtypes(self) -> ColumnConfig:
+        if self.values:
+            cast_fn, convertible_to = {
+                DType.INTEGER: (int, "integers"),
+                DType.FLOAT: (float, "floats"),
+                DType.STRING: (str, "strings"),
+                DType.CATEGORY: (lambda c: c, "categories"),
+                DType.BOOLEAN: (bool, "booleans"),
+                DType.DATE: (str, "strings"),
+                DType.DATETIME: (str, "strings"),
+            }[self.dtype]
+            try:
+                self.values = [cast_fn(c) for c in self.values]
+            except ValueError:
+                raise ValueError(
+                    f"All values must be convertible to {convertible_to} when dtype is '{self.dtype.value}'"
+                )
+        return self
 
 
 class DType(str, Enum):
     INTEGER = "integer"
     FLOAT = "float"
     STRING = "string"
+    CATEGORY = "category"
     BOOLEAN = "boolean"
     DATE = "date"
     DATETIME = "datetime"
@@ -234,19 +280,23 @@ def _create_table_rows_generator(
     llm_config: LLMConfig,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
-        dtype_to_pydantic_type = {
-            DType.INTEGER: int,
-            DType.FLOAT: float,
-            DType.STRING: str,
-            DType.BOOLEAN: bool,
-            # response_format has limited support for JSON Schema features
-            # thus we represent dates and datetimes as strings
-            DType.DATE: str,
-            DType.DATETIME: str,
-        }
+        def create_annotation(column_config: ColumnConfig) -> Type:
+            if column_config.values or column_config.dtype is DType.CATEGORY:
+                return Literal[tuple(column_config.values)]
+            return {
+                DType.INTEGER: int,
+                DType.FLOAT: float,
+                DType.STRING: str,
+                DType.BOOLEAN: bool,
+                # response_format has limited support for JSON Schema features
+                # thus we represent dates and datetimes as strings
+                DType.DATE: str,
+                DType.DATETIME: str,
+            }[column_config.dtype]
+
         fields = {}
         for column_name, column_config in columns.items():
-            annotation = dtype_to_pydantic_type[column_config.dtype]
+            annotation = create_annotation(column_config)
             fields[column_name] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
@@ -351,16 +401,14 @@ def _convert_table_rows_generator_to_df(
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         for column_name, column_config in columns.items():
             if column_config.dtype in [DType.DATE, DType.DATETIME]:
-                # datetime.date, datetime.datetime -> datetime64[ns] / datetime64[ns, tz]
                 df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
             elif column_config.dtype in [DType.INTEGER, DType.FLOAT]:
-                # int -> int64[pyarrow], float -> double[pyarrow]
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce", dtype_backend="pyarrow")
             elif column_config.dtype is DType.BOOLEAN:
-                # bool -> bool
                 df[column_name] = df[column_name].astype(bool)
+            elif column_config.dtype is DType.CATEGORY:
+                df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
             else:
-                # other -> string[pyarrow]
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
@@ -425,12 +473,13 @@ def sample(
             "columns": {
                 "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
-                "gender": {"prompt": "gender of the guest; male or female", "dtype": "string"},
+                "gender": {"dtype": "category", "values": ["male", "female"]},
                 "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
                 "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
                 "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
                 "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
                 "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
+                "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]}
             },
         }
     }
