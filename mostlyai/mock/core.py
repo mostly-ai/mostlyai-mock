@@ -112,12 +112,12 @@ class ColumnConfig(BaseModel):
                     data["dtype"] = DType.STRING
         return data
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_categories_are_provided_for_category_dtype(self) -> ColumnConfig:
         if self.dtype == DType.CATEGORY and not self.categories:
             raise ValueError("At least one category must be provided when dtype is 'category'")
         return self
-    
+
     @model_validator(mode="after")
     def clear_categories_if_dtype_is_not_category(self) -> ColumnConfig:
         if self.dtype != DType.CATEGORY:
