@@ -432,7 +432,7 @@ def sample(
             },
         }
     }
-    df = mock.sample(tables=tables, sample_size=10)
+    df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1-nano")
     ```
 
     Example of multiple tables (with PK/FK relationships):
@@ -465,7 +465,7 @@ def sample(
             ],
         },
     }
-    data = mock.sample(tables=tables, sample_size=5)
+    data = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
     df_guests = data["guests"]
     df_purchases = data["purchases"]
     ```
