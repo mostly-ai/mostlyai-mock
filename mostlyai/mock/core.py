@@ -280,25 +280,23 @@ def _create_table_rows_generator(
     llm_config: LLMConfig,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
-        def create_annotation(column_config: ColumnConfig, dtype: Type | None = None) -> Type:
-            annotation = Literal[tuple(column_config.values)] if column_config.values else dtype
-            assert annotation is not None
-            return annotation
+        def create_annotation(column_config: ColumnConfig) -> Type:
+            if column_config.values or column_config.dtype is DType.CATEGORY:
+                return Literal[tuple(column_config.values)]
+            return {
+                DType.INTEGER: int,
+                DType.FLOAT: float,
+                DType.STRING: str,
+                DType.BOOLEAN: bool,
+                # response_format has limited support for JSON Schema features
+                # thus we represent dates and datetimes as strings
+                DType.DATE: str,
+                DType.DATETIME: str,
+            }[column_config.dtype]
 
-        dtype_to_pydantic_type = {
-            DType.INTEGER: lambda column_config: create_annotation(column_config, int),
-            DType.FLOAT: lambda column_config: create_annotation(column_config, float),
-            DType.STRING: lambda column_config: create_annotation(column_config, str),
-            DType.CATEGORY: lambda column_config: create_annotation(column_config),
-            DType.BOOLEAN: lambda column_config: create_annotation(column_config, bool),
-            # response_format has limited support for JSON Schema features
-            # thus we represent dates and datetimes as strings
-            DType.DATE: lambda column_config: create_annotation(column_config, str),
-            DType.DATETIME: lambda column_config: create_annotation(column_config, str),
-        }
         fields = {}
         for column_name, column_config in columns.items():
-            annotation = dtype_to_pydantic_type[column_config.dtype](column_config)
+            annotation = create_annotation(column_config)
             fields[column_name] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
