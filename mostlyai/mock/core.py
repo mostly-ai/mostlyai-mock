@@ -18,10 +18,11 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
+from typing import Literal
 
 import litellm
 import pandas as pd
-from pydantic import BaseModel, Field, RootModel, create_model, field_validator
+from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
 SYSTEM_PROMPT = f"""
@@ -97,14 +98,28 @@ class TableConfig(BaseModel):
 
 
 class ColumnConfig(BaseModel):
-    prompt: str
-    dtype: DType
+    prompt: str = ""
+    dtype: DType = Field(default_factory=lambda: DType.STRING)
+    categories: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def update_string_dtype_if_categories_are_provided(self) -> ColumnConfig:
+        if self.dtype == DType.STRING and self.categories:
+            self.dtype = DType.CATEGORY
+        return self
+
+    @model_validator(mode='after')
+    def validate_categories_are_provided_for_category_dtype(self) -> ColumnConfig:
+        if self.dtype == DType.CATEGORY and not self.categories:
+            raise ValueError("At least one category must be provided when dtype is 'category'")
+        
+        return self
 
 class DType(str, Enum):
     INTEGER = "integer"
     FLOAT = "float"
     STRING = "string"
+    CATEGORY = "category"
     BOOLEAN = "boolean"
     DATE = "date"
     DATETIME = "datetime"
@@ -235,18 +250,19 @@ def _create_table_rows_generator(
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
         dtype_to_pydantic_type = {
-            DType.INTEGER: int,
-            DType.FLOAT: float,
-            DType.STRING: str,
-            DType.BOOLEAN: bool,
+            DType.INTEGER: lambda _: int,
+            DType.FLOAT: lambda _: float,
+            DType.STRING: lambda _: str,
+            DType.CATEGORY: lambda column_config: Literal[tuple(column_config.categories)],
+            DType.BOOLEAN: lambda _: bool,
             # response_format has limited support for JSON Schema features
             # thus we represent dates and datetimes as strings
-            DType.DATE: str,
-            DType.DATETIME: str,
+            DType.DATE: lambda _: str,
+            DType.DATETIME: lambda _: str,
         }
         fields = {}
         for column_name, column_config in columns.items():
-            annotation = dtype_to_pydantic_type[column_config.dtype]
+            annotation = dtype_to_pydantic_type[column_config.dtype](column_config)
             fields[column_name] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
@@ -425,7 +441,7 @@ def sample(
             "columns": {
                 "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
-                "gender": {"prompt": "gender of the guest; male or female", "dtype": "string"},
+                "gender": {"dtype": "category", "categories": ["male", "female"]},
                 "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
                 "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
                 "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
