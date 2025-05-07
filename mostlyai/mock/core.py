@@ -264,7 +264,7 @@ def _create_table_prompt(
     # add previous rows as context to help the LLM generate consistent data
     if previous_rows:
         prompt += f"\n## Previous {len(previous_rows)} Rows:\n\n"
-        prompt += json.dumps(previous_rows, indent=2)
+        prompt += f"{json.dumps(previous_rows, indent=2)}\n\n"
 
     # add context table name, primary key and data
     if context_data is not None:
@@ -282,12 +282,14 @@ def _create_table_prompt(
         prompt += f"Generate {batch_size} rows for the `{table_name}` table.\n\n"
     else:
         prompt += (
-            f"Generate rows for the `{table_name}` table. "
-            f"The Foreign Key column may only contain values from Context Table Data.\n\n"
+            f"Generate data for the `{table_name}` table. "
+            f"The Foreign Key column may only contain values from Context Table Data. "
+            f"Pay attention to description of the Foreign Key column to understand the relationship.\n\n"
         )
     if previous_rows:
         prompt += (
             "Generate new rows that maintain consistency with the previous rows where appropriate. "
+            "Don't copy previous rows in the output. "
             "Don't pay attention to the number of previous rows; there might have been more generated than provided.\n\n"
         )
     prompt += f"Do not use code to generate the data.\n\n"
@@ -559,34 +561,52 @@ def sample(
     from mostlyai import mock
 
     tables = {
-        "guests": {
-            "description": "Guests of an Alpine ski hotel in Austria",
+        "customers": {
+            "description": "Customers of a hardware store",
             "columns": {
-                "id": {"prompt": "the unique id of the guest", "dtype": "integer"},
-                "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "id",
+            "primary_key": "customer_id",
         },
-        "purchases": {
-            "description": "Purchases of a Guest during their stay",
+        "orders": {
+            "description": "Orders of a Customer",
             "columns": {
-                "guest_id": {"prompt": "the guest id for that purchase", "dtype": "integer"},
-                "purchase_id": {"prompt": "the unique id of the purchase", "dtype": "string"},
-                "text": {"prompt": "purchase text description", "dtype": "string"},
-                "amount": {"prompt": "purchase amount in EUR", "dtype": "float"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
+                "text": {"prompt": "order text description", "dtype": "string"},
+                "amount": {"prompt": "order amount in USD", "dtype": "float"},
+            },
+            "primary_key": "order_id",
+            "foreign_keys": [
+                {
+                    "column": "customer_id",
+                    "referenced_table": "customers",
+                    "description": "each customer has anywhere between 1 and 3 orders",
+                }
+            ],
+        },
+        "items": {
+            "description": "Items in an Order",
+            "columns": {
+                "item_id": {"prompt": "the unique id of the item", "dtype": "string"},
+                "order_id": {"prompt": "the order id for that item", "dtype": "string"},
+                "name": {"prompt": "the name of the item", "dtype": "string"},
+                "price": {"prompt": "the price of the item in USD", "dtype": "float"},
             },
             "foreign_keys": [
                 {
-                    "column": "guest_id",
-                    "referenced_table": "guests",
-                    "description": "each guest has anywhere between 1 and 10 purchases",
+                    "column": "order_id",
+                    "referenced_table": "orders",
+                    "description": "each order has between 2 and 5 items",
                 }
             ],
         },
     }
-    data = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
-    df_guests = data["guests"]
-    df_purchases = data["purchases"]
+    data = mock.sample(tables=tables, sample_size=1, model="openai/gpt-4.1")
+    df_customers = data["customers"]
+    df_orders = data["orders"]
+    df_items = data["items"]
     ```
     """
 
