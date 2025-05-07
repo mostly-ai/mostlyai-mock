@@ -96,7 +96,7 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
             child_to_parents[table_name] = [fk.referenced_table for fk in table_config.foreign_keys]
         visited = set()
 
-        def raise_if_cycle(node: str, path: list[str], visited: set[str]) -> None:
+        def raise_if_cycle(node: str, path: list[str]) -> None:
             if node in path:
                 cycle_start = path.index(node)
                 cycle = path[cycle_start:] + [node]
