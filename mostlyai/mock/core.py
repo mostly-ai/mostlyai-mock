@@ -603,7 +603,7 @@ def sample(
             ],
         },
     }
-    data = mock.sample(tables=tables, sample_size=1, model="openai/gpt-4.1")
+    data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4.1")
     df_customers = data["customers"]
     df_orders = data["orders"]
     df_items = data["items"]
