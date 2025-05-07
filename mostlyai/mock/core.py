@@ -100,16 +100,12 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 cycle_start = path.index(node)
                 cycle = path[cycle_start:] + [node]
                 raise ValueError(f"Circular dependency detected: {' -> '.join(cycle)}")
-
             if node in visited:
                 return
-
             visited.add(node)
             path.append(node)
-
             for neighbor in dependency_graph[node]:
                 has_cycle(neighbor, path, visited)
-
             path.pop()
 
         visited = set()
