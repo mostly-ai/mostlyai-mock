@@ -96,22 +96,21 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
             child_to_parents[table_name] = [fk.referenced_table for fk in table_config.foreign_keys]
         visited = set()
 
-        def raise_if_cycle(node: str, path: list[str]) -> None:
-            if node in path:
-                cycle_start = path.index(node)
-                cycle = path[cycle_start:] + [node]
+        def detect_cycle(table_name: str, path: list[str]) -> None:
+            if table_name in path:
+                cycle_start = path.index(table_name)
+                cycle = path[cycle_start:] + [table_name]
                 raise ValueError(f"Circular dependency detected: {' -> '.join(cycle)}")
-            if node in visited:
+            if table_name in visited:
                 return
-            visited.add(node)
-            path.append(node)
-            for parent in child_to_parents[node]:
-                raise_if_cycle(parent, path)
+            visited.add(table_name)
+            path.append(table_name)
+            for parent in child_to_parents[table_name]:
+                detect_cycle(parent, path)
             path.pop()
 
-        for node in child_to_parents:
-            if node not in visited:
-                raise_if_cycle(node, [])
+        for table_name in child_to_parents:
+            detect_cycle(table_name, [])
 
         return self
 
