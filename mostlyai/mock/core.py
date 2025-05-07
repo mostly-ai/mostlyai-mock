@@ -91,11 +91,12 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
     @model_validator(mode="after")
     def validate_no_circular_dependencies(self) -> MockConfig:
-        dependency_graph = {}
+        child_to_parents = {}
         for table_name, table_config in self.root.items():
-            dependency_graph[table_name] = [fk.referenced_table for fk in table_config.foreign_keys]
+            child_to_parents[table_name] = [fk.referenced_table for fk in table_config.foreign_keys]
+        visited = set()
 
-        def has_cycle(node: str, path: list[str], visited: set[str]) -> None:
+        def raise_if_cycle(node: str, path: list[str], visited: set[str]) -> None:
             if node in path:
                 cycle_start = path.index(node)
                 cycle = path[cycle_start:] + [node]
@@ -104,14 +105,13 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 return
             visited.add(node)
             path.append(node)
-            for neighbor in dependency_graph[node]:
-                has_cycle(neighbor, path, visited)
+            for parent in child_to_parents[node]:
+                raise_if_cycle(parent, path)
             path.pop()
 
-        visited = set()
-        for node in dependency_graph:
+        for node in child_to_parents:
             if node not in visited:
-                has_cycle(node, [], visited)
+                raise_if_cycle(node, [])
 
         return self
 
