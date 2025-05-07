@@ -89,6 +89,36 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
         return tables
 
+    @model_validator(mode="after")
+    def validate_no_circular_dependencies(self) -> MockConfig:
+        dependency_graph = {}
+        for table_name, table_config in self.root.items():
+            dependency_graph[table_name] = [fk.referenced_table for fk in table_config.foreign_keys]
+
+        def has_cycle(node: str, path: list[str], visited: set[str]) -> None:
+            if node in path:
+                cycle_start = path.index(node)
+                cycle = path[cycle_start:] + [node]
+                raise ValueError(f"Circular dependency detected: {' -> '.join(cycle)}")
+
+            if node in visited:
+                return
+
+            visited.add(node)
+            path.append(node)
+
+            for neighbor in dependency_graph[node]:
+                has_cycle(neighbor, path, visited)
+
+            path.pop()
+
+        visited = set()
+        for node in dependency_graph:
+            if node not in visited:
+                has_cycle(node, [], visited)
+
+        return self
+
 
 class TableConfig(BaseModel):
     description: str = ""
@@ -426,6 +456,44 @@ def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig
     return sample_size
 
 
+def _build_dependency_graph(config: MockConfig) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+    child_to_parents = {}
+    parent_to_children = {}
+
+    for table_name in config.root:
+        child_to_parents[table_name] = []
+        parent_to_children[table_name] = []
+
+    for table_name, table_config in config.root.items():
+        if table_config.foreign_keys:
+            for fk in table_config.foreign_keys:
+                referenced_table = fk.referenced_table
+                child_to_parents[table_name].append(referenced_table)
+                parent_to_children[referenced_table].append(table_name)
+
+    subject_tables = [table_name for table_name, deps in child_to_parents.items() if not deps]
+    return child_to_parents, parent_to_children, subject_tables
+
+
+def _build_execution_plan(parent_to_children: dict[str, list[str]], subject_tables: list[str]) -> list[str]:
+    execution_plan = []
+    bfs_queue = list(subject_tables)
+    processed = set()
+
+    while bfs_queue:
+        table_name = bfs_queue.pop(0)
+        if table_name in processed:
+            continue
+
+        execution_plan.append(table_name)
+        processed.add(table_name)
+
+        for child in parent_to_children[table_name]:
+            if child not in bfs_queue and child not in processed:
+                bfs_queue.append(child)
+    return execution_plan
+
+
 def sample(
     *,
     tables: dict[str, dict],
@@ -526,9 +594,15 @@ def sample(
 
     sample_size = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
-    dfs = {}
-    for table_name, table_config in config.root.items():
-        if len(dfs) == 0:
+
+    child_to_parents, parent_to_children, subject_tables = _build_dependency_graph(config)
+    execution_plan: list[str] = _build_execution_plan(parent_to_children, subject_tables)
+
+    results: dict[str, pd.DataFrame] = {}
+
+    for table_name in execution_plan:
+        table_config = config.root[table_name]
+        if not child_to_parents[table_name]:
             # subject table
             df = _sample_table(
                 table_name=table_name,
@@ -542,22 +616,21 @@ def sample(
                 previous_rows_size=5,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
-        elif len(dfs) == 1:
-            # sequence table
+        else:
+            # sequencial table
+            referenced_table = table_config.foreign_keys[0].referenced_table
             df = _sample_table(
                 table_name=table_name,
                 table_config=table_config,
                 primary_keys=primary_keys,
                 sample_size=None,
-                context_data=next(iter(dfs.values())),
+                context_data=results[referenced_table],
                 temperature=temperature,
                 top_p=top_p,
                 batch_size=1,  # generate one sequence at a time
                 previous_rows_size=5,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
-        else:
-            raise RuntimeError("Only 1 or 2 table setups are supported for now")
-        dfs[table_name] = df
+        results[table_name] = df
 
-    return dfs if len(dfs) > 1 else next(iter(dfs.values()))
+    return results if len(results) > 1 else next(iter(results.values()))
