@@ -13,8 +13,22 @@ The latest release of `mostlyai-mock` can be installed via pip:
 ```bash
 pip install -U mostlyai-mock
 ```
-
+---
 Note: An API key to a LLM endpoint, with structured response, is required. It is recommended to set such a key as an environment variable (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.). Alternatively, the key needs to be passed to every call to the library itself via the parameter `api_key`.
+
+Example for OpenAI:
+Save your OpenAI API key as an environment variable (e.g. `OPENAI_API_KEY`):
+```bash
+OPENAI_API_KEY='sk-pxxxxxxxxxxxxx'
+```
+And then use it in your environment:
+```bash
+import os 
+os.environ["api_key"] = OPENAI_API_KEY
+```
+For more details on supported models and providers, please refer to [LiteLLM's documentation](https://docs.litellm.ai/docs/providers)
+
+---
 
 ## Quick Start
 
