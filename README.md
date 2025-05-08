@@ -6,19 +6,26 @@
 
 Create data out of nothing. Prompt LLMs for Tabular Data.
 
-## Installation
+## Getting Started
 
-The latest release of `mostlyai-mock` can be installed via pip:
+1. Install the latest version of the `mostlyai-mock` python package.
 
 ```bash
 pip install -U mostlyai-mock
 ```
 
-Note: An API key to a LLM endpoint, with structured response, is required. It is recommended to set such a key as an environment variable (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.). Alternatively, the key needs to be passed to every call to the library itself via the parameter `api_key`.
+2. Setup the API key of your LLM endpoint (if not done yet)
 
-## Quick Start
+```python
+import os
+os.environ["OPENAI_API_KEY"] = "your-api-key"
+# os.environ["GEMINI_API_KEY"] = "your-api-key"
+# os.environ["GROQ_API_KEY"] = "your-api-key"
+```
 
-### Single Table
+Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`.
+
+3. Create your first basic synthetic table from scratch
 
 ```python
 from mostlyai import mock
@@ -39,11 +46,15 @@ tables = {
         },
     }
 }
-df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1-nano")
-print(df)
+df = mock.sample(
+    tables=tables,  # provide table and column definitions
+    sample_size=10,  # generate 10 records
+    model="openai/gpt-4.1-nano",  # select the LLM model (optional)
+)
+df
 ```
 
-### Multiple Tables
+4. Create your first multi-table synthetic dataset
 
 ```python
 from mostlyai import mock
@@ -91,11 +102,12 @@ tables = {
         ],
     },
 }
-data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4.1")
-df_customers = data["customers"]
-df_orders = data["orders"]
-df_items = data["items"]
-print(df_customers)
-print(df_orders)
-print(df_items)
+data = mock.sample(
+    tables=tables, 
+    sample_size=2, 
+    model="openai/gpt-4.1"
+)
+print(data["customers"])
+print(data["orders"])
+print(data["items"])
 ```
