@@ -12,7 +12,7 @@ The latest release of `mostlyai-mock` can be installed via pip:
 pip install -U mostlyai-mock
 ```
 
-Note: An API key to a LLM endpoint, with structured response, is required. It is recommended to set such a key as an environment variable (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.). Alternatively, the key needs to be passed to every call to the library iteself via the parameter `api_key`.
+Note: An API key to a LLM endpoint, with structured response, is required. It is recommended to set such a key as an environment variable (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.). Alternatively, the key needs to be passed to every call to the library itself via the parameter `api_key`.
 
 ## Quick Start
 
