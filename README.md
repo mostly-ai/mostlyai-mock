@@ -47,34 +47,53 @@ print(df)
 from mostlyai import mock
 
 tables = {
-    "guests": {
-        "description": "Guests of an Alpine ski hotel in Austria",
+    "customers": {
+        "description": "Customers of a hardware store",
         "columns": {
-            "id": {"prompt": "the unique id of the guest", "dtype": "integer"},
-            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+            "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+            "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
         },
-        "primary_key": "id",
+        "primary_key": "customer_id",
     },
-    "purchases": {
-        "description": "Purchases of a Guest during their stay",
+    "orders": {
+        "description": "Orders of a Customer",
         "columns": {
-            "guest_id": {"prompt": "the guest id for that purchase", "dtype": "integer"},
-            "purchase_id": {"prompt": "the unique id of the purchase", "dtype": "string"},
-            "text": {"prompt": "purchase text description", "dtype": "string"},
-            "amount": {"prompt": "purchase amount in EUR", "dtype": "float"},
+            "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+            "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
+            "text": {"prompt": "order text description", "dtype": "string"},
+            "amount": {"prompt": "order amount in USD", "dtype": "float"},
+        },
+        "primary_key": "order_id",
+        "foreign_keys": [
+            {
+                "column": "customer_id",
+                "referenced_table": "customers",
+                "description": "each customer has anywhere between 1 and 3 orders",
+            }
+        ],
+    },
+    "items": {
+        "description": "Items in an Order",
+        "columns": {
+            "item_id": {"prompt": "the unique id of the item", "dtype": "string"},
+            "order_id": {"prompt": "the order id for that item", "dtype": "string"},
+            "name": {"prompt": "the name of the item", "dtype": "string"},
+            "price": {"prompt": "the price of the item in USD", "dtype": "float"},
         },
         "foreign_keys": [
             {
-                "column": "guest_id",
-                "referenced_table": "guests",
-                "description": "each guest has anywhere between 1 and 10 purchases",
+                "column": "order_id",
+                "referenced_table": "orders",
+                "description": "each order has between 2 and 5 items",
             }
         ],
     },
 }
-data = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
-df_guests = data["guests"]
-df_purchases = data["purchases"]
-print(df_guests)
-print(df_purchases)
+data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4.1")
+df_customers = data["customers"]
+df_orders = data["orders"]
+df_items = data["items"]
+print(df_customers)
+print(df_orders)
+print(df_items)
 ```
