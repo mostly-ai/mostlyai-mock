@@ -43,8 +43,6 @@ across tables.
 """
 
 
-
-
 class LLMConfig(BaseModel):
     model: str
     api_key: str | None = None
@@ -285,7 +283,7 @@ def _create_table_prompt(
     prompt += "\n## Instructions:\n\n"
     if batch_size is not None:
         prompt += f"Generate {batch_size} rows for the `{table_name}` table.\n\n"
-    
+
     if context_data is not None:
         prompt += (
             f"Generate data for the `{table_name}` table. "
@@ -508,7 +506,9 @@ def _build_dependency_graph(config: MockConfig) -> tuple[dict[str, list[str]], d
     return child_to_parents, parent_to_children, subject_tables
 
 
-def _build_execution_plan(parent_to_children: dict[str, list[str]], child_to_parents: dict[str, list[str]], subject_tables: list[str]) -> list[str]:
+def _build_execution_plan(
+    parent_to_children: dict[str, list[str]], child_to_parents: dict[str, list[str]], subject_tables: list[str]
+) -> list[str]:
     execution_plan = []
     bfs_queue = list(subject_tables)
     processed = set()
