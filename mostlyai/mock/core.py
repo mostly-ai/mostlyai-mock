@@ -577,7 +577,7 @@ def sample(
                 {
                     "column": "customer_id",
                     "referenced_table": "customers",
-                    "description": "each customer has anywhere between 1 and 3 orders",
+                    "description": "each customer has anywhere between 2 and 3 orders",
                 }
             ],
         },
@@ -593,7 +593,7 @@ def sample(
                 {
                     "column": "order_id",
                     "referenced_table": "orders",
-                    "description": "each order has between 2 and 5 items",
+                    "description": "each order has between 1 and 2 items",
                 }
             ],
         },
