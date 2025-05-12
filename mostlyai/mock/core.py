@@ -122,7 +122,7 @@ class TableConfig(BaseModel):
     description: str = ""
     columns: dict[str, ColumnConfig] = Field(..., min_items=1)
     primary_key: str | None = None
-    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list, min_length=0, max_length=2)
+    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list)
 
 
 class ColumnConfig(BaseModel):
@@ -231,7 +231,7 @@ def _create_table_prompt(
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
     context_data: pd.DataFrame | None,
-    non_context_data: pd.DataFrame | None,
+    non_context_data: dict[str, pd.DataFrame],
     previous_rows: list[dict],
 ) -> str:
     if batch_size is not None:
@@ -272,15 +272,15 @@ def _create_table_prompt(
         prompt += f"## Context Table Data:\n\n"
         prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
 
-    # add non-context table name, primary key and data
-    if non_context_data is not None:
-        fk = foreign_keys[1]
-        prompt += f"## Non-Context Table: `{fk.referenced_table}`\n\n"
+    # add non-context table names, primary keys and data
+    if non_context_data:
+        for fk in foreign_keys[1:]:
+            prompt += f"## Non-Context Table: `{fk.referenced_table}`\n\n"
 
-        prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
+            prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
-        prompt += f"## Non-Context Table Data:\n\n"
-        prompt += f"{non_context_data.to_json(orient='records', indent=2)}\n\n"
+            prompt += f"## Non-Context Table Data:\n\n"
+            prompt += f"{non_context_data[fk.referenced_table].to_json(orient='records', indent=2)}\n\n"
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
@@ -384,24 +384,24 @@ def _create_table_rows_generator(
                     yield data.iloc[i : i + batch_size]
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
+    context_data: pd.DataFrame | None = None
     if table_config.foreign_keys:
         context_table_name = table_config.foreign_keys[0].referenced_table
         assert generated_data is not None
         assert context_table_name in generated_data
         context_data = generated_data[context_table_name]
         sample_size = len(context_data)
-    else:
-        assert sample_size is not None
-        context_data = None
+    assert sample_size is not None
 
-    # derive non-context data (if second foreign key is present)
-    non_context_data = None
-    if table_config.foreign_keys and len(table_config.foreign_keys) == 2:
-        non_context_table_name = table_config.foreign_keys[1].referenced_table
+    # derive non-context data (if more than one foreign key is present)
+    non_context_data: dict[str, pd.DataFrame] = {}
+    if table_config.foreign_keys and len(table_config.foreign_keys) > 1:
         assert generated_data is not None
-        assert non_context_table_name in generated_data
         assert non_context_size is not None
-        non_context_data = generated_data[non_context_table_name]
+        for fk in table_config.foreign_keys[1:]:
+            non_context_table_name = fk.referenced_table
+            assert non_context_table_name in generated_data
+            non_context_data[non_context_table_name] = generated_data[non_context_table_name]
 
     # ensure model supports response_format and json schema
     supported_params = litellm.get_supported_openai_params(model=llm_config.model)
@@ -422,7 +422,10 @@ def _create_table_rows_generator(
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
-        non_context_batch = non_context_data.sample(n=non_context_size) if non_context_data is not None else None
+        non_context_batch = {
+            table_name: df.sample(n=non_context_size)
+            for table_name, df in non_context_data.items()
+        } if non_context_data else None
         prompt_kwargs = {
             "table_name": table_name,
             "table_description": table_config.description,
@@ -431,7 +434,7 @@ def _create_table_rows_generator(
             "batch_size": batch_size if context_batch is None else None,
             "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
             "context_data": context_batch if context_batch is not None else None,
-            "non_context_data": non_context_batch if non_context_batch is not None else None,
+            "non_context_data": non_context_batch if non_context_batch else None,
             "previous_rows": list(previous_rows),
         }
         prompt = _create_table_prompt(**prompt_kwargs)
@@ -690,7 +693,7 @@ def sample(
                 top_p=top_p,
                 batch_size=1,  # generate one sequence at a time
                 previous_rows_size=10,  # present 10 previously generated rows to the LLM
-                non_context_size=5,  # pick 5 rows to choose from for each non-context foreign key
+                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
         results[table_name] = df
