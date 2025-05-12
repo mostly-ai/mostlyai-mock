@@ -100,7 +100,10 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
             if table_name in path:
                 cycle_start = path.index(table_name)
                 cycle = path[cycle_start:] + [table_name]
-                raise ValueError(f"Circular dependency detected: {' -> '.join(cycle)}")
+                msg = f"Circular dependency detected: {' -> '.join(cycle)}."
+                if len(cycle) == 2:
+                    msg += " Self-referencing tables are not yet supported."
+                raise ValueError(msg)
             if table_name in visited:
                 return
             visited.add(table_name)
@@ -119,7 +122,7 @@ class TableConfig(BaseModel):
     description: str = ""
     columns: dict[str, ColumnConfig] = Field(..., min_items=1)
     primary_key: str | None = None
-    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list, min_length=0, max_length=1)
+    foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list, min_length=0, max_length=2)
 
 
 class ColumnConfig(BaseModel):
@@ -193,28 +196,25 @@ def _sample_table(
     table_config: TableConfig,
     primary_keys: dict[str, str] | None,
     sample_size: int | None,
-    context_data: pd.DataFrame | None,
+    generated_data: dict[str, pd.DataFrame] | None,
     temperature: float,
     top_p: float,
     batch_size: int,
     previous_rows_size: int,
+    non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> pd.DataFrame:
-    assert (sample_size is None) != (context_data is None), (
-        "Exactly one of sample_size or context_data must be provided"
-    )
-    if sample_size is None:
-        sample_size = len(context_data)
     table_rows_generator = _create_table_rows_generator(
         table_name=table_name,
         table_config=table_config,
         primary_keys=primary_keys,
         sample_size=sample_size,
-        context_data=context_data,
+        generated_data=generated_data,
         temperature=temperature,
         top_p=top_p,
         batch_size=batch_size,
         previous_rows_size=previous_rows_size,
+        non_context_size=non_context_size,
         llm_config=llm_config,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{table_name}`".ljust(45))
@@ -231,6 +231,7 @@ def _create_table_prompt(
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
     context_data: pd.DataFrame | None,
+    non_context_data: pd.DataFrame | None,
     previous_rows: list[dict],
 ) -> str:
     if batch_size is not None:
@@ -271,16 +272,29 @@ def _create_table_prompt(
         prompt += f"## Context Table Data:\n\n"
         prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
 
+    # add non-context table name, primary key and data
+    if non_context_data is not None:
+        fk = foreign_keys[1]
+        prompt += f"## Non-Context Table: `{fk.referenced_table}`\n\n"
+
+        prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
+
+        prompt += f"## Non-Context Table Data:\n\n"
+        prompt += f"{non_context_data.to_json(orient='records', indent=2)}\n\n"
+
     # add instructions
     prompt += "\n## Instructions:\n\n"
     if batch_size is not None:
         prompt += f"Generate {batch_size} rows for the `{table_name}` table.\n\n"
-    else:
+
+    if context_data is not None:
         prompt += (
             f"Generate data for the `{table_name}` table. "
-            f"The Foreign Key column may only contain values from Context Table Data. "
+            f"The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
+            f"The second Foreign Key column from Foreign Keys section (if exists) may only contain values from Non-Context Table Data. "
             f"Pay attention to description of the Foreign Key column to understand the relationship.\n\n"
         )
+
     if previous_rows:
         prompt += (
             "Generate new rows that maintain consistency with the previous rows where appropriate. "
@@ -298,12 +312,13 @@ def _create_table_rows_generator(
     table_name: str,
     table_config: TableConfig,
     primary_keys: dict[str, str] | None,
-    sample_size: int,
+    sample_size: int | None,
+    generated_data: dict[str, pd.DataFrame] | None,
     temperature: float,
     top_p: float,
-    context_data: pd.DataFrame | None,
     batch_size: int,
     previous_rows_size: int,
+    non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
@@ -368,6 +383,26 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
+    # derive context data (if first foreign key is present) and harmonize sample size accordingly
+    if table_config.foreign_keys:
+        context_table_name = table_config.foreign_keys[0].referenced_table
+        assert generated_data is not None
+        assert context_table_name in generated_data
+        context_data = generated_data[context_table_name]
+        sample_size = len(context_data)
+    else:
+        assert sample_size is not None
+        context_data = None
+
+    # derive non-context data (if second foreign key is present)
+    non_context_data = None
+    if table_config.foreign_keys and len(table_config.foreign_keys) == 2:
+        non_context_table_name = table_config.foreign_keys[1].referenced_table
+        assert generated_data is not None
+        assert non_context_table_name in generated_data
+        assert non_context_size is not None
+        non_context_data = generated_data[non_context_table_name]
+
     # ensure model supports response_format and json schema
     supported_params = litellm.get_supported_openai_params(model=llm_config.model)
     assert "response_format" in supported_params
@@ -387,6 +422,7 @@ def _create_table_rows_generator(
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
+        non_context_batch = non_context_data.sample(n=non_context_size) if non_context_data is not None else None
         prompt_kwargs = {
             "table_name": table_name,
             "table_description": table_config.description,
@@ -395,6 +431,7 @@ def _create_table_rows_generator(
             "batch_size": batch_size if context_batch is None else None,
             "foreign_keys": table_config.foreign_keys if context_batch is not None else None,
             "context_data": context_batch if context_batch is not None else None,
+            "non_context_data": non_context_batch if non_context_batch is not None else None,
             "previous_rows": list(previous_rows),
         }
         prompt = _create_table_prompt(**prompt_kwargs)
@@ -472,7 +509,9 @@ def _build_dependency_graph(config: MockConfig) -> tuple[dict[str, list[str]], d
     return child_to_parents, parent_to_children, subject_tables
 
 
-def _build_execution_plan(parent_to_children: dict[str, list[str]], subject_tables: list[str]) -> list[str]:
+def _build_execution_plan(
+    parent_to_children: dict[str, list[str]], child_to_parents: dict[str, list[str]], subject_tables: list[str]
+) -> list[str]:
     execution_plan = []
     bfs_queue = list(subject_tables)
     processed = set()
@@ -480,6 +519,13 @@ def _build_execution_plan(parent_to_children: dict[str, list[str]], subject_tabl
     while bfs_queue:
         table_name = bfs_queue.pop(0)
         if table_name in processed:
+            continue
+
+        # ensure all parents are processed before processing this table
+        unprocessed_parents = [p for p in child_to_parents[table_name] if p not in processed]
+        if unprocessed_parents:
+            bfs_queue.extend(unprocessed_parents)
+            bfs_queue.append(table_name)
             continue
 
         execution_plan.append(table_name)
@@ -611,7 +657,7 @@ def sample(
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
 
     child_to_parents, parent_to_children, subject_tables = _build_dependency_graph(config)
-    execution_plan: list[str] = _build_execution_plan(parent_to_children, subject_tables)
+    execution_plan: list[str] = _build_execution_plan(parent_to_children, child_to_parents, subject_tables)
 
     results: dict[str, pd.DataFrame] = {}
 
@@ -624,26 +670,27 @@ def sample(
                 table_config=table_config,
                 primary_keys=None,
                 sample_size=sample_size[table_name],
-                context_data=None,
+                generated_data=None,
                 temperature=temperature,
                 top_p=top_p,
-                batch_size=20,  # generate 20 subjects at a time
-                previous_rows_size=5,
+                batch_size=30,  # generate 30 subjects at a time
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=None,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
         else:
             # sequencial table
-            referenced_table = table_config.foreign_keys[0].referenced_table
             df = _sample_table(
                 table_name=table_name,
                 table_config=table_config,
                 primary_keys=primary_keys,
                 sample_size=None,
-                context_data=results[referenced_table],
+                generated_data=results,
                 temperature=temperature,
                 top_p=top_p,
                 batch_size=1,  # generate one sequence at a time
-                previous_rows_size=5,
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=5,  # pick 5 rows to choose from for each non-context foreign key
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
         results[table_name] = df
