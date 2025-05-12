@@ -100,7 +100,10 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
             if table_name in path:
                 cycle_start = path.index(table_name)
                 cycle = path[cycle_start:] + [table_name]
-                raise ValueError(f"Circular dependency detected: {' -> '.join(cycle)}")
+                msg = f"Circular dependency detected: {' -> '.join(cycle)}."
+                if len(cycle) == 2:
+                    msg += " Self-referencing tables are not yet supported."
+                raise ValueError(msg)
             if table_name in visited:
                 return
             visited.add(table_name)
@@ -670,8 +673,8 @@ def sample(
                 generated_data=None,
                 temperature=temperature,
                 top_p=top_p,
-                batch_size=20,  # generate 20 subjects at a time
-                previous_rows_size=5,
+                batch_size=30,  # generate 30 subjects at a time
+                previous_rows_size=10,
                 non_context_size=None,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
@@ -686,7 +689,7 @@ def sample(
                 temperature=temperature,
                 top_p=top_p,
                 batch_size=1,  # generate one sequence at a time
-                previous_rows_size=5,
+                previous_rows_size=10,
                 non_context_size=5,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
