@@ -674,7 +674,7 @@ def sample(
                 temperature=temperature,
                 top_p=top_p,
                 batch_size=30,  # generate 30 subjects at a time
-                previous_rows_size=10,
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
                 non_context_size=None,
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
@@ -689,8 +689,8 @@ def sample(
                 temperature=temperature,
                 top_p=top_p,
                 batch_size=1,  # generate one sequence at a time
-                previous_rows_size=10,
-                non_context_size=5,
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=5,  # pick 5 rows to choose from for each non-context foreign key
                 llm_config=LLMConfig(model=model, api_key=api_key),
             )
         results[table_name] = df
