@@ -423,7 +423,7 @@ def _create_table_rows_generator(
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
         non_context_batch = {
-            table_name: df.sample(n=non_context_size)
+            table_name: df.sample(frac=1.0).head(non_context_size)
             for table_name, df in non_context_data.items()
         } if non_context_data else None
         prompt_kwargs = {
@@ -613,10 +613,19 @@ def sample(
             },
             "primary_key": "customer_id",
         },
+        "warehouses": {
+            "description": "Warehouses of a hardware store",
+            "columns": {
+                "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
+                "name": {"prompt": "the name of the warehouse", "dtype": "string"},
+            },
+            "primary_key": "warehouse_id",
+        },
         "orders": {
             "description": "Orders of a Customer",
             "columns": {
                 "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
                 "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
                 "text": {"prompt": "order text description", "dtype": "string"},
                 "amount": {"prompt": "order amount in USD", "dtype": "float"},
@@ -627,7 +636,11 @@ def sample(
                     "column": "customer_id",
                     "referenced_table": "customers",
                     "description": "each customer has anywhere between 2 and 3 orders",
-                }
+                },
+                {
+                    "column": "warehouse_id",
+                    "referenced_table": "warehouses",
+                },
             ],
         },
         "items": {
@@ -649,6 +662,7 @@ def sample(
     }
     data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4.1")
     df_customers = data["customers"]
+    df_warehouses = data["warehouses"]
     df_orders = data["orders"]
     df_items = data["items"]
     ```

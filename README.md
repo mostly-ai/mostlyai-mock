@@ -86,10 +86,19 @@ tables = {
         },
         "primary_key": "customer_id",
     },
+    "warehouses": {
+        "description": "Warehouses of a hardware store",
+        "columns": {
+            "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
+            "name": {"prompt": "the name of the warehouse", "dtype": "string"},
+        },
+        "primary_key": "warehouse_id",
+    },
     "orders": {
         "description": "Orders of a Customer",
         "columns": {
             "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+            "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
             "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
             "text": {"prompt": "order text description", "dtype": "string"},
             "amount": {"prompt": "order amount in USD", "dtype": "float"},
@@ -100,7 +109,11 @@ tables = {
                 "column": "customer_id",
                 "referenced_table": "customers",
                 "description": "each customer has anywhere between 2 and 3 orders",
-            }
+            },
+            {
+                "column": "warehouse_id",
+                "referenced_table": "warehouses",
+            },
         ],
     },
     "items": {
@@ -126,28 +139,30 @@ data = mock.sample(
     model="openai/gpt-4.1"
 )
 print(data["customers"])
-#    customer_id            name
-# 0            1  Michael Torres
-# 1            2      Elaine Kim
+#    customer_id             name
+# 0            1  Matthew Carlson
+# 1            2       Priya Shah
+print(data["warehouses"])
+#    warehouse_id                        name
+# 0             1    Central Distribution Hub
+# 1             2  Northgate Storage Facility
 print(data["orders"])
-#    customer_id        order_id                                               text  amount
-# 0            1  ORD20240612001        Home office desk and ergonomic chair bundle  412.95
-# 1            1  ORD20240517322               Wireless noise-cancelling headphones  226.49
-# 2            1  ORD20240430307         Smart LED desk lamp with USB charging port   69.99
-# 3            2  ORD20240614015            Eco-friendly bamboo kitchen utensil set   39.95
-# 4            2  ORD20240528356  Air fryer with digital touch screen, 5-quart c...  129.99
-# 5            2  ORD20240510078          Double-walled glass coffee mugs, set of 4    48.5
+#    customer_id  warehouse_id   order_id                                               text  amount
+# 0            1             2  ORD-10294  3-tier glass shelving units, expedited deliver...  649.25
+# 1            1             1  ORD-10541  Office desk chairs, set of 6, with assembly se...   824.9
+# 2            1             1  ORD-10802  Executive standing desk, walnut finish, standa...   519.0
+# 3            2             1  ORD-11017  Maple conference table, cable management inclu...  1225.5
+# 4            2             2  ORD-11385  Set of ergonomic task chairs, black mesh, stan...  767.75
 print(data["items"])
-#         item_id        order_id                                       name   price
-# 0   ITEM100001A  ORD20240612001                Ergonomic Mesh Office Chair  179.99
-# 1   ITEM100001B  ORD20240612001                Adjustable Home Office Desk  232.96
-# 2   ITEM100002A  ORD20240517322       Wireless Noise-Cancelling Headphones  226.49
-# 3   ITEM100003A  ORD20240430307                        Smart LED Desk Lamp   59.99
-# 4   ITEM100003B  ORD20240430307  USB Charging Cable (Desk Lamp Compatible)    10.0
-# 5   ITEM100004A  ORD20240614015                       Bamboo Cooking Spoon   13.49
-# 6   ITEM100004B  ORD20240614015                      Bamboo Slotted Turner   12.99
-# 7   ITEM100005A  ORD20240528356         Digital Air Fryer (5-Quart, Black)  115.99
-# 8   ITEM100005B  ORD20240528356     Silicone Liner for Air Fryer (5-Quart)   13.99
-# 9   ITEM100006A  ORD20240510078      Double-Walled Glass Coffee Mug (12oz)   13.75
-# 10  ITEM100006B  ORD20240510078       Double-Walled Glass Coffee Mug (8oz)   11.25
+#      item_id   order_id                                        name   price
+# 0  ITM-80265  ORD-10294         3-Tier Tempered Glass Shelving Unit   409.0
+# 1  ITM-80266  ORD-10294  Brushed Aluminum Shelf Brackets (Set of 4)  240.25
+# 2  ITM-81324  ORD-10541              Ergonomic Mesh-Back Desk Chair   132.5
+# 3  ITM-81325  ORD-10541  Professional Office Chair Assembly Service    45.0
+# 4  ITM-82101  ORD-10802      Executive Standing Desk, Walnut Finish   469.0
+# 5  ITM-82102  ORD-10802         Desk Installation and Setup Service    50.0
+# 6  ITM-83391  ORD-11017             Maple Conference Table, 10-Seat  1125.5
+# 7  ITM-83392  ORD-11017       Integrated Table Cable Management Kit   100.0
+# 8  ITM-84311  ORD-11385            Ergonomic Task Chair, Black Mesh  359.25
+# 9  ITM-84312  ORD-11385                   Standard Delivery Service    48.5
 ```
