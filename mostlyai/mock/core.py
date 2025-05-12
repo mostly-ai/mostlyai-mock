@@ -166,7 +166,7 @@ class ColumnConfig(BaseModel):
                 DType.DATETIME: (str, "strings"),
             }[self.dtype]
             try:
-                self.values = [cast_fn(c) for c in self.values]
+                self.values = [cast_fn(c) if pd.notna(c) else None for c in self.values]
             except ValueError:
                 raise ValueError(
                     f"All values must be convertible to {convertible_to} when dtype is '{self.dtype.value}'"
@@ -326,14 +326,14 @@ def _create_table_rows_generator(
             if column_config.values or column_config.dtype is DType.CATEGORY:
                 return Literal[tuple(column_config.values)]
             return {
-                DType.INTEGER: int,
-                DType.FLOAT: float,
-                DType.STRING: str,
-                DType.BOOLEAN: bool,
+                DType.INTEGER: int | None,
+                DType.FLOAT: float | None,
+                DType.STRING: str | None,
+                DType.BOOLEAN: bool | None,
                 # response_format has limited support for JSON Schema features
                 # thus we represent dates and datetimes as strings
-                DType.DATE: str,
-                DType.DATETIME: str,
+                DType.DATE: str | None,
+                DType.DATETIME: str | None,
             }[column_config.dtype]
 
         fields = {}
@@ -422,10 +422,11 @@ def _create_table_rows_generator(
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
-        non_context_batch = {
-            table_name: df.sample(frac=1.0).head(non_context_size)
-            for table_name, df in non_context_data.items()
-        } if non_context_data else None
+        non_context_batch = (
+            {table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()}
+            if non_context_data
+            else None
+        )
         prompt_kwargs = {
             "table_name": table_name,
             "table_description": table_config.description,
@@ -469,10 +470,14 @@ def _convert_table_rows_generator_to_df(
         for column_name, column_config in columns.items():
             if column_config.dtype in [DType.DATE, DType.DATETIME]:
                 df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
-            elif column_config.dtype in [DType.INTEGER, DType.FLOAT]:
-                df[column_name] = pd.to_numeric(df[column_name], errors="coerce", dtype_backend="pyarrow")
+            elif column_config.dtype is DType.INTEGER:
+                df[column_name] = pd.to_numeric(df[column_name], errors="coerce", downcast="integer").astype(
+                    "int64[pyarrow]"
+                )
+            elif column_config.dtype is DType.FLOAT:
+                df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("double[pyarrow]")
             elif column_config.dtype is DType.BOOLEAN:
-                df[column_name] = df[column_name].astype(bool)
+                df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("boolean[pyarrow]")
             elif column_config.dtype is DType.CATEGORY:
                 df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
             else:
