@@ -39,7 +39,7 @@ from mostlyai import mock
 
 tables = {
     "guests": {
-        "description": "Guests of an Alpine ski hotel in Austria",
+        "prompt": "Guests of an Alpine ski hotel in Austria",
         "columns": {
             "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
             "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
@@ -79,7 +79,7 @@ from mostlyai import mock
 
 tables = {
     "customers": {
-        "description": "Customers of a hardware store",
+        "prompt": "Customers of a hardware store",
         "columns": {
             "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
             "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
@@ -87,7 +87,7 @@ tables = {
         "primary_key": "customer_id",
     },
     "warehouses": {
-        "description": "Warehouses of a hardware store",
+        "prompt": "Warehouses of a hardware store",
         "columns": {
             "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
             "name": {"prompt": "the name of the warehouse", "dtype": "string"},
@@ -95,7 +95,7 @@ tables = {
         "primary_key": "warehouse_id",
     },
     "orders": {
-        "description": "Orders of a Customer",
+        "prompt": "Orders of a Customer",
         "columns": {
             "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
             "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
@@ -108,7 +108,7 @@ tables = {
             {
                 "column": "customer_id",
                 "referenced_table": "customers",
-                "description": "each customer has anywhere between 2 and 3 orders",
+                "prompt": "each customer has anywhere between 2 and 3 orders",
             },
             {
                 "column": "warehouse_id",
@@ -117,7 +117,7 @@ tables = {
         ],
     },
     "items": {
-        "description": "Items in an Order",
+        "prompt": "Items in an Order",
         "columns": {
             "item_id": {"prompt": "the unique id of the item", "dtype": "string"},
             "order_id": {"prompt": "the order id for that item", "dtype": "string"},
@@ -128,7 +128,7 @@ tables = {
             {
                 "column": "order_id",
                 "referenced_table": "orders",
-                "description": "each order has between 1 and 2 items",
+                "prompt": "each order has between 1 and 2 items",
             }
         ],
     },
@@ -165,4 +165,43 @@ print(data["items"])
 # 7  ITM-83392  ORD-11017       Integrated Table Cable Management Kit   100.0
 # 8  ITM-84311  ORD-11385            Ergonomic Task Chair, Black Mesh  359.25
 # 9  ITM-84312  ORD-11385                   Standard Delivery Service    48.5
+```
+
+6. Create your first self-referencing synthetic table
+
+```python
+from mostlyai import mock
+
+tables = {
+    "employees": {
+        "prompt": "Employees of a company",
+        "columns": {
+            "employee_id": {"prompt": "the unique id of the employee", "dtype": "integer"},
+            "name": {"prompt": "first name and last name of the president", "dtype": "string"},
+            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "integer"},
+            "role": {"prompt": "the role of the employee", "dtype": "string"},
+        },
+        "primary_key": "employee_id",
+        "foreign_keys": [
+            {
+                "column": "boss_id",
+                "referenced_table": "employees",
+                "prompt": "each boss has at most 3 employees",
+            },
+        ],
+    }
+}
+df = sample(tables=tables, sample_size=10, model="openai/gpt-4.1")
+print(df)
+#    employee_id             name  boss_id                      role
+# 0            1  Sandra Phillips     <NA>                 President
+# 1            2      Marcus Tran        1   Chief Financial Officer
+# 2            3    Ava Whittaker        1  Chief Technology Officer
+# 3            4    Sophie Martin        1  Chief Operations Officer
+# 4            5      Chad Nelson        2           Finance Manager
+# 5            6     Ethan Glover        2         Senior Accountant
+# 6            7   Kimberly Ortiz        2         Junior Accountant
+# 7            8     Lucas Romero        3                IT Manager
+# 8            9      Priya Desai        3    Lead Software Engineer
+# 9           10    Felix Bennett        3    Senior Systems Analyst
 ```
