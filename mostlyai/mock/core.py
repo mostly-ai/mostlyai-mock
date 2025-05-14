@@ -559,6 +559,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
+    return_type: Literal["auto", "dict"] = "auto"
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate mock data by prompting an LLM.
@@ -583,6 +584,7 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
+        return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
@@ -706,4 +708,4 @@ def sample(
             )
         data[table_name] = df
 
-    return data if len(data) > 1 else next(iter(data.values()))
+    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
