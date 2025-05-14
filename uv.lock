@@ -1428,7 +1428,6 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
-    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -1457,7 +1456,6 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
-    { name = "typer", specifier = ">=0.9.0,<1.0.0" },
 ]
 
 [package.metadata.requires-dev]
