@@ -221,6 +221,7 @@ def _sample_table(
     table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
 
+
 def _create_table_prompt(
     *,
     name: str,
@@ -559,7 +560,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
-    return_type: Literal["auto", "dict"] = "auto"
+    return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate mock data by prompting an LLM.
@@ -694,18 +695,18 @@ def sample(
     for table_name in execution_plan:
         table_config = config.root[table_name]
         df = _sample_table(
-                name=table_name,
-                prompt=table_config.prompt,
-                columns=table_config.columns,
-                foreign_keys=table_config.foreign_keys,
-                primary_keys=primary_keys,
-                generated_data=data,
-                sample_size=sample_size[table_name],
-                batch_size=30,  # generate 30 root table rows at a time
-                previous_rows_size=10,  # present 10 previously generated rows to the LLM
-                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-                llm_config=llm_config,
-            )
+            name=table_name,
+            prompt=table_config.prompt,
+            columns=table_config.columns,
+            foreign_keys=table_config.foreign_keys,
+            primary_keys=primary_keys,
+            generated_data=data,
+            sample_size=sample_size[table_name],
+            batch_size=30,  # generate 30 root table rows at a time
+            previous_rows_size=10,  # present 10 previously generated rows to the LLM
+            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+            llm_config=llm_config,
+        )
         data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
