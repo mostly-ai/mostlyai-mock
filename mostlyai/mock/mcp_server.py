@@ -1,6 +1,7 @@
 import os
 import tempfile
 import zipfile
+
 import requests
 from fastmcp import Context, FastMCP
 
@@ -24,25 +25,26 @@ mcp = FastMCP(name="MostlyAI Mock MCP Server")
 def _upload_to_0x0st(data: dict) -> str:
     with tempfile.TemporaryDirectory() as temp_dir:
         zip_path = os.path.join(temp_dir, "mock_data.zip")
-        with zipfile.ZipFile(zip_path, 'w') as zip_file:
+        with zipfile.ZipFile(zip_path, "w") as zip_file:
             for table_name, df in data.items():
                 csv_path = os.path.join(temp_dir, f"{table_name}.csv")
                 df.to_csv(csv_path, index=False)
                 zip_file.write(csv_path, arcname=f"{table_name}.csv")
-        
-        with open(zip_path, 'rb') as f:
+
+        with open(zip_path, "rb") as f:
             response = requests.post(
-                'https://0x0.st', 
-                files={'file': f}, 
-                data={'expires': '24', 'secret': ''},
-                headers={'User-Agent': 'MockData/1.0'}
+                "https://0x0.st",
+                files={"file": f},
+                data={"expires": "24", "secret": ""},
+                headers={"User-Agent": "MockData/1.0"},
             )
-        
+
         if response.status_code == 200:
             url = response.text.strip()
             return url
         else:
             raise Exception(f"Failed to upload ZIP: HTTP {response.status_code}")
+
 
 @mcp.tool(description=SAMPLE_MOCK_TOOL_DESCRIPTION)
 def sample_mock_data(
@@ -73,6 +75,7 @@ def sample_mock_data(
     ctx.info(f"Generated mock data for `{len(tables)}` tables")
     url = _upload_to_0x0st(data)
     return url
+
 
 def main():
     mcp.run(transport="stdio")
