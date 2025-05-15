@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mcp-server = "mostlyai.mock.mcp:main"
+mcp-server = "mostlyai.mock.mcp_server:main"
 
 [project.urls]
 homepage = "https://github.com/mostly-ai/mostlyai-mock"
