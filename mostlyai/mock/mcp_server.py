@@ -29,9 +29,7 @@ def _upload_to_0x0st(data: dict) -> str:
                 csv_path = os.path.join(temp_dir, f"{table_name}.csv")
                 df.to_csv(csv_path, index=False)
                 zip_file.write(csv_path, arcname=f"{table_name}.csv")
-                print(f"Added {table_name}.csv to ZIP")
         
-        print("Uploading ZIP file to 0x0.st...")
         with open(zip_path, 'rb') as f:
             response = requests.post(
                 'https://0x0.st', 
@@ -42,12 +40,9 @@ def _upload_to_0x0st(data: dict) -> str:
         
         if response.status_code == 200:
             url = response.text.strip()
-            print(f"Uploaded ZIP file to: {url}")
             return url
         else:
-            error_msg = f"Failed to upload ZIP: HTTP {response.status_code}"
-            print(error_msg)
-            raise Exception(error_msg)
+            raise Exception(f"Failed to upload ZIP: HTTP {response.status_code}")
 
 @mcp.tool(description=SAMPLE_MOCK_TOOL_DESCRIPTION)
 def sample_mock_data(
