@@ -205,3 +205,32 @@ print(df)
 # 8            9      Priya Desai        3    Lead Software Engineer
 # 9           10    Felix Bennett        3    Senior Systems Analyst
 ```
+
+## MCP Server
+
+This repo comes with MCP Server. It can be easily consumed by any MCP Client by providing the following configuration:
+
+```yaml
+{
+  "mcpServers": {
+      "mostlyai-mock-mcp": {
+          "command": "uvx",
+          "args": ["--from", "mostlyai-mock", "mcp-server"],
+          "env": {
+              "OPENAI_API_KEY": "PROVIDE YOUR KEY",
+              "GEMINI_API_KEY": "PROVIDE YOUR KEY",
+              "GROQ_API_KEY": "PROVIDE YOUR KEY",
+              "ANTHROPIC_API_KEY": "PROVIDE YOUR KEY"
+          }
+      }
+  }
+}
+```
+
+For example:
+- in Claude Desktop, go to "Settings" > "Developer" > "Edit Config" and paste the above into `claude_desktop_config.json`
+- in Cursor, go to "Settings" > "Cursor Settings" > "MCP" > "Add new global MCP server" and paste the above into `mcp.json`
+
+Troubleshooting:
+1. If MCP Server is not picked up by the MCP Client, specify full path in `command`, e.g. `/Users/johnsmith/.local/bin/uvx`
+2. MCP Inspector can be used for debugging: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock mcp-server`
