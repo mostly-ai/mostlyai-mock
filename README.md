@@ -243,7 +243,7 @@ In order to consume LiteLLM Proxy Server, the user must:
 - Set `LITELLM_PROXY_API_KEY` and `LITELLM_PROXY_API_BASE`
 - Prefix the `model` with LiteLLM Proxy Server provider: `litellm_proxy`. For example, `litellm_proxy/openai/gpt-4.1-nano`
 
-```
+```python
 from mostlyai import mock
 import os
 
