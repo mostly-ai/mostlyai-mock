@@ -235,3 +235,30 @@ Troubleshooting:
 1. If the MCP Client fails to detect the MCP Server, provide the absolute path in the `command` field, for example: `/Users/johnsmith/.local/bin/uvx`
 2. To debug MCP Server issues, you can use MCP Inspector by running: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock mcp-server`
 3. In order to develop locally, modify the configuration by replacing `"command": "uv"` (or use the full path to `uv` if needed) and `"args": ["--directory", "/Users/johnsmith/mostlyai-mock", "run", "mcp-server"]`
+
+
+## LiteLLM Proxy Server
+
+In order to consume LiteLLM Proxy Server, the user must:
+- Set `LITELLM_PROXY_API_KEY` and `LITELLM_PROXY_API_BASE`
+- Prefix the `model` with LiteLLM Proxy Server provider: `litellm_proxy`. For example, `litellm_proxy/openai/gpt-4.1-nano`
+
+```
+from mostlyai import mock
+import os
+
+os.environ["LITELLM_PROXY_API_BASE"] = "https://litellm-proxy-production-7a86.up.railway.app/"
+tables = {
+    "guests": {
+        "prompt": "Guests of an Alpine ski hotel in Austria",
+        "columns": {
+            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+        },
+    }
+}
+df = mock.sample(tables=tables, sample_size=10, model="litellm_proxy/mostlyai/openai/gpt-4.1-nano")
+
+print(df)
+```
+
+Read more [here](https://docs.litellm.ai/docs/providers/litellm_proxy).
