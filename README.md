@@ -210,7 +210,7 @@ print(df)
 
 This repo comes with MCP Server. It can be easily consumed by any MCP Client by providing the following configuration:
 
-```yaml
+```json
 {
   "mcpServers": {
       "mostlyai-mock-mcp": {
@@ -232,5 +232,6 @@ For example:
 - in Cursor, go to "Settings" > "Cursor Settings" > "MCP" > "Add new global MCP server" and paste the above into `mcp.json`
 
 Troubleshooting:
-1. If MCP Server is not picked up by the MCP Client, specify full path in `command`, e.g. `/Users/johnsmith/.local/bin/uvx`
-2. MCP Inspector can be used for debugging: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock mcp-server`
+1. If the MCP Client fails to detect the MCP Server, provide the absolute path in the `command` field, for example: `/Users/johnsmith/.local/bin/uvx`
+2. To debug MCP Server issues, you can use MCP Inspector by running: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock mcp-server`
+3. In order to develop locally, modify the configuration by replacing `"command": "uv"` (or use the full path to `uv` if needed) and `"args": ["--from", "mostlyai-mock", "mcp-server"]`
