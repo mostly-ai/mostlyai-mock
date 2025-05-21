@@ -12,6 +12,7 @@ Create data out of nothing. Prompt LLMs for Tabular Data.
 * Supports variety of data types: `string`, `categorical`, `integer`, `float`, `boolean`, `date`, and `datetime`.
 * Specify context, distributions and rules via dataset-, table- or column-level prompts.
 * Tailor the diversity and realism of your generated data via temperature and top_p.
+* Ability to enrich existing data by generating missing columns while maintaining consistency with existing values.
 
 ## Getting Started
 
@@ -167,6 +168,47 @@ print(data["items"])
 # 9  ITM-84312  ORD-11385                   Standard Delivery Service    48.5
 ```
 
+5. Enrich existing data with additional columns
+
+```python
+from mostlyai import mock
+import pandas as pd
+
+# Define the schema
+tables = {
+    "guests": {
+        "prompt": "Guests of an Alpine ski hotel in Austria",
+        "columns": {
+            "guest_id": {"prompt": "the unique id of the guest", "dtype": "integer"},
+            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+            "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
+            "gender": {"dtype": "category", "values": ["male", "female"]},
+            "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
+            "room_number": {"prompt": "room number", "dtype": "integer"},
+            "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
+        },
+        "primary_key": "guest_id",
+    }
+}
+
+# Create existing data with some columns already filled
+existing_df = pd.DataFrame({
+    "guest_id": [1, 2, 3],
+    "name": ["Anna Schmidt", "Marco Rossi", "Sophie Dupont"],
+    "nationality": ["DE", "IT", "FR"],
+})
+
+# Enrich the existing data with additional columns
+enriched_df = mock.sample(
+    tables=tables, 
+    existing_data={"guests": existing_df},
+    model="openai/gpt-4.1-nano"
+)
+print(enriched_df)
+# Output will contain all original columns plus the newly generated ones:
+# guest_id, name, nationality (original), plus gender, age, room_number, is_vip (generated)
+```
+
 6. Create your first self-referencing synthetic table
 
 ```python
@@ -191,7 +233,7 @@ tables = {
         ],
     }
 }
-df = sample(tables=tables, sample_size=10, model="openai/gpt-4.1")
+df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1")
 print(df)
 #    employee_id             name  boss_id                      role
 # 0            1  Sandra Phillips     <NA>                 President

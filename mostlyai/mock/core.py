@@ -35,12 +35,16 @@ highly realistic, contextually appropriate data based on schema definitions. You
 3. Create contextually appropriate values that reflect real-world patterns and distributions
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
-6. Return well-formatted JSON output that can be directly parsed.
-7. Don't use markdown formatting.
+6. When enriching existing data, ensure that new values are consistent with existing values
+7. Return well-formatted JSON output that can be directly parsed
+8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
 appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
 across tables.
+
+When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
+to generate compatible and realistic values for the missing columns.
 """
 
 
@@ -204,6 +208,7 @@ def _sample_table(
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
+    existing_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
         name=name,
@@ -217,6 +222,7 @@ def _sample_table(
         previous_rows_size=previous_rows_size,
         non_context_size=non_context_size,
         llm_config=llm_config,
+        existing_df=existing_df,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
@@ -234,6 +240,7 @@ def _create_table_prompt(
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
     previous_rows: list[dict] | None,
+    existing_df: pd.DataFrame | None = None,
 ) -> str:
     # add table prompt
     prompt = f"# {prompt}\n\n"
@@ -246,6 +253,23 @@ def _create_table_prompt(
     # add columns specifications
     prompt += "## Columns Specifications:\n\n"
     prompt += f"{json.dumps({name: config.model_dump() for name, config in columns.items()}, indent=2)}\n\n"
+
+    # Add existing data as context if available
+    if existing_df is not None:
+        existing_data_sample = existing_df.head(min(10, len(existing_df)))
+        
+        # Create a copy for formatting dates and datetimes
+        formatted_df = existing_data_sample.copy()
+        
+        # Format dates and datetimes in human-readable format
+        for col in formatted_df.columns:
+            if pd.api.types.is_datetime64_any_dtype(formatted_df[col]):
+                formatted_df[col] = formatted_df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+            elif pd.api.types.is_period_dtype(formatted_df[col]) or pd.api.types.is_datetime64_dtype(formatted_df[col]):
+                formatted_df[col] = formatted_df[col].dt.strftime('%Y-%m-%d')
+        
+        prompt += f"## Existing Data to Augment:\n\n"
+        prompt += f"{formatted_df.to_json(orient='records', indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
     if previous_rows:
@@ -284,7 +308,16 @@ def _create_table_prompt(
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
-    if not foreign_keys:
+    
+    if existing_df is not None:
+        prompt += (
+            f"You are given existing data for the `{name}` table and asked to generate "
+            f"values for the missing columns. The existing data contains column(s): {', '.join(existing_df.columns)}. "
+            f"You need to generate values for column(s): {', '.join(columns.keys())}. "
+            f"Ensure that the generated values are contextually appropriate and consistent with the existing data. "
+            f"Use the existing columns' values to inform the generation of new values.\n\n"
+        )
+    elif not foreign_keys:
         assert batch_size is not None
         prompt += f"Generate {batch_size} rows for the `{name}` table.\n\n"
     else:
@@ -322,6 +355,7 @@ def _create_table_rows_generator(
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
+    existing_df: pd.DataFrame | None = None,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
         def create_annotation(column_config: ColumnConfig) -> Type:
@@ -424,6 +458,53 @@ def _create_table_rows_generator(
 
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
+    
+    # If we have existing data, we need to modify our approach
+    if existing_df is not None:
+        # For existing data enrichment, we need to generate one row at a time
+        # for each row in the existing data
+        for idx, row in existing_df.iterrows():
+            # Create a context with just this row's data
+            row_dict = row.to_dict()
+            
+            # Create a prompt with this specific row
+            prompt = _create_table_prompt(
+                name=name,
+                prompt=prompt,
+                columns=columns,
+                primary_keys=primary_keys,
+                batch_size=1,  # One row at a time
+                foreign_keys=foreign_keys,
+                context_data=context_data,
+                non_context_data=non_context_data if idx == 0 else None,  # Only pass non_context_data on first iteration
+                previous_rows=list(previous_rows),
+                existing_df=pd.DataFrame([row_dict]),  # Pass just this row as the existing data
+            )
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+            
+            # Add debug print to see the prompt being sent
+            print(f"\n{'='*40} PROMPT (ENRICHMENT) {'='*40}\n")
+            print(f"SYSTEM PROMPT:\n{SYSTEM_PROMPT}\n")
+            print(f"USER PROMPT:\n{prompt}\n")
+            print(f"{'='*90}\n")
+
+            response = litellm.completion(messages=messages, **litellm_kwargs)
+            rows_stream = yield_rows_from_json_chunks_stream(response)
+            
+            try:
+                row = next(rows_stream)
+                previous_rows.append(row)
+                yield row
+            except StopIteration:
+                # If we get no response, still need to generate something
+                # Create an empty row with the correct columns
+                empty_row = {col: None for col in columns.keys()}
+                yield empty_row
+            
+            yielded_sequences += 1
+        return  # We're done after processing all existing rows
+    
+    # Original loop for generating data from scratch
     for context_batch in batch_infinitely(context_data):
         non_context_batch = (
             {table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()}
@@ -440,8 +521,15 @@ def _create_table_rows_generator(
             context_data=context_batch,
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
+            existing_df=existing_df,
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+
+        # Add debug print to see the prompt being sent
+        print(f"\n{'='*40} PROMPT {'='*40}\n")
+        print(f"SYSTEM PROMPT:\n{SYSTEM_PROMPT}\n")
+        print(f"USER PROMPT:\n{prompt}\n")
+        print(f"{'='*90}\n")
 
         response = litellm.completion(messages=messages, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
@@ -562,6 +650,7 @@ def sample(
     temperature: float = 1.0,
     top_p: float = 0.95,
     return_type: Literal["auto", "dict"] = "auto",
+    existing_data: dict[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate mock data by prompting an LLM.
@@ -587,6 +676,9 @@ def sample(
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
+        existing_data (dict[str, pd.DataFrame] | None): Existing data to enrich. If provided, the columns present
+            in the existing data will be used as context, and the LLM will generate values only for the missing columns.
+            The dictionary keys should match the table names in the `tables` parameter. Default is None.
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
@@ -613,6 +705,46 @@ def sample(
         }
     }
     df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1-nano")
+    ```
+
+    Example of enriching existing data:
+    ```python
+    from mostlyai import mock
+    import pandas as pd
+
+    # Define the schema
+    tables = {
+        "guests": {
+            "prompt": "Guests of an Alpine ski hotel in Austria",
+            "columns": {
+                "guest_id": {"prompt": "the unique id of the guest", "dtype": "integer"},
+                "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+                "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
+                "gender": {"dtype": "category", "values": ["male", "female"]},
+                "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
+                "room_number": {"prompt": "room number", "dtype": "integer"},
+                "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
+            },
+            "primary_key": "guest_id",
+        }
+    }
+
+    # Create existing data with some columns already filled
+    existing_df = pd.DataFrame({
+        "guest_id": [1, 2, 3],
+        "name": ["Anna Schmidt", "Marco Rossi", "Sophie Dupont"],
+        "nationality": ["DE", "IT", "FR"],
+    })
+
+    # Enrich the existing data with additional columns
+    enriched_df = mock.sample(
+        tables=tables, 
+        existing_data={"guests": existing_df},
+        model="openai/gpt-4.1-nano"
+    )
+    print(enriched_df)
+    # Output will contain all original columns plus the newly generated ones:
+    # guest_id, name, nationality (original), plus gender, age, room_number, is_vip (generated)
     ```
 
     Example of multiple tables (with PK/FK relationships):
@@ -681,6 +813,73 @@ def sample(
     df_orders = data["orders"]
     df_items = data["items"]
     ```
+    
+    Example of enriching data with foreign key relationships:
+    ```python
+    from mostlyai import mock
+    import pandas as pd
+    
+    # Define the schema with relationships
+    tables = {
+        "customers": {
+            "prompt": "Customers of a hardware store",
+            "columns": {
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
+                "email": {"prompt": "email address of the customer", "dtype": "string"},
+                "phone": {"prompt": "phone number of the customer", "dtype": "string"},
+                "loyalty_level": {"dtype": "category", "values": ["bronze", "silver", "gold", "platinum"]},
+            },
+            "primary_key": "customer_id",
+        },
+        "orders": {
+            "prompt": "Orders of a Customer",
+            "columns": {
+                "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "order_date": {"prompt": "the date when the order was placed", "dtype": "date"},
+                "total_amount": {"prompt": "order amount in USD", "dtype": "float"},
+                "status": {"dtype": "category", "values": ["pending", "shipped", "delivered", "cancelled"]},
+            },
+            "primary_key": "order_id",
+            "foreign_keys": [
+                {
+                    "column": "customer_id",
+                    "referenced_table": "customers",
+                    "prompt": "each customer has anywhere between 1 and 3 orders",
+                },
+            ],
+        },
+    }
+    
+    # Existing data for customers (only some columns are filled)
+    existing_customers = pd.DataFrame({
+        "customer_id": [101, 102, 103],
+        "name": ["John Davis", "Maria Garcia", "Wei Chen"],
+    })
+    
+    # Existing data for orders (only some columns are filled)
+    existing_orders = pd.DataFrame({
+        "order_id": ["ORD-001", "ORD-002"],
+        "customer_id": [101, 101],
+    })
+    
+    # Enrich both tables
+    enriched_data = mock.sample(
+        tables=tables,
+        existing_data={
+            "customers": existing_customers,
+            "orders": existing_orders,
+        },
+        model="openai/gpt-4.1-nano"
+    )
+    
+    # The result will contain both tables with all columns filled
+    print(enriched_data["customers"])  # Will have email, phone, and loyalty_level filled
+    print(enriched_data["orders"])     # Will have order_date, total_amount, and status filled
+    
+    # New orders might also be generated for customers 102 and 103
+    ```
     """
 
     config = MockConfig(tables)
@@ -692,22 +891,72 @@ def sample(
     execution_plan: list[str] = _build_execution_plan(config)
 
     data: dict[str, pd.DataFrame] = {}
+    
+    # Initialize data with existing_data if provided
+    if existing_data:
+        for table_name, df in existing_data.items():
+            if table_name not in config.root:
+                raise ValueError(f"Table {table_name} in existing_data not found in tables configuration")
+            data[table_name] = df.copy()
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
-        df = _sample_table(
-            name=table_name,
-            prompt=table_config.prompt,
-            columns=table_config.columns,
-            foreign_keys=table_config.foreign_keys,
-            primary_keys=primary_keys,
-            generated_data=data,
-            sample_size=sample_size[table_name],
-            batch_size=30,  # generate 30 root table rows at a time
-            previous_rows_size=10,  # present 10 previously generated rows to the LLM
-            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-            llm_config=llm_config,
-        )
-        data[table_name] = df
+        
+        existing_df = data.get(table_name)
+        
+        if existing_df is not None:
+            # Table already exists in data, need to augment it
+            
+            # Get missing columns that need to be generated
+            existing_columns = set(existing_df.columns)
+            all_columns = set(table_config.columns.keys())
+            missing_columns = all_columns - existing_columns
+            
+            if not missing_columns:
+                # All columns exist, nothing to generate
+                continue
+            
+            # Create a temporary table config with only the missing columns
+            temp_columns = {col: table_config.columns[col] for col in missing_columns}
+            
+            # Generate the missing columns
+            df_missing = _sample_table(
+                name=table_name,
+                prompt=f"{table_config.prompt} (enriching existing data)",
+                columns=temp_columns,
+                foreign_keys=table_config.foreign_keys,
+                primary_keys=primary_keys,
+                generated_data=data,
+                sample_size=len(existing_df),
+                batch_size=min(30, len(existing_df)),  # Adjust batch size based on existing data size
+                previous_rows_size=10,
+                non_context_size=10,
+                llm_config=llm_config,
+                existing_df=existing_df,  # Pass the existing DataFrame for context
+            )
+            
+            # Merge the existing data with the newly generated columns
+            for col in missing_columns:
+                existing_df[col] = df_missing[col].values
+            
+            # Update the data dictionary
+            data[table_name] = existing_df
+        else:
+            # Table doesn't exist yet, generate it normally
+            df = _sample_table(
+                name=table_name,
+                prompt=table_config.prompt,
+                columns=table_config.columns,
+                foreign_keys=table_config.foreign_keys,
+                primary_keys=primary_keys,
+                generated_data=data,
+                sample_size=sample_size[table_name],
+                batch_size=30,  # generate 30 root table rows at a time
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+                llm_config=llm_config,
+                existing_df=None,
+            )
+            data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
