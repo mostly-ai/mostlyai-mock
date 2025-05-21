@@ -249,8 +249,26 @@ def _create_table_prompt(
 
     # add previous rows as context to help the LLM generate consistent data
     if previous_rows:
-        prompt += f"\n## Previous {len(previous_rows)} Rows:\n\n"
-        prompt += f"{json.dumps(previous_rows, indent=2)}\n\n"
+        # Format dates and datetimes in the previous rows
+        formatted_rows = []
+        for row in previous_rows:
+            formatted_row = row.copy()
+            for key, value in row.items():
+                # Try to identify date and datetime values by their format
+                if isinstance(value, str):
+                    try:
+                        # Try to parse as datetime first (more specific)
+                        dt = pd.to_datetime(value)
+                        if pd.notna(dt) and ' ' in value:  # Contains time component
+                            formatted_row[key] = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        elif pd.notna(dt):  # Just a date
+                            formatted_row[key] = dt.strftime('%Y-%m-%d')
+                    except (ValueError, TypeError):
+                        pass  # Keep the original value
+            formatted_rows.append(formatted_row)
+            
+        prompt += f"\n## Previous {len(formatted_rows)} Rows:\n\n"
+        prompt += f"{json.dumps(formatted_rows, indent=2)}\n\n"
 
     # define foreign keys
     if foreign_keys:
@@ -265,8 +283,16 @@ def _create_table_prompt(
 
         prompt += f"## Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
+        # Format dates and datetimes in human-readable format for context data
+        formatted_context = context_data.copy()
+        for col in formatted_context.columns:
+            if pd.api.types.is_datetime64_any_dtype(formatted_context[col]):
+                formatted_context[col] = formatted_context[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+            elif pd.api.types.is_period_dtype(formatted_context[col]) or pd.api.types.is_datetime64_dtype(formatted_context[col]):
+                formatted_context[col] = formatted_context[col].dt.strftime('%Y-%m-%d')
+
         prompt += f"## Context Table Data:\n\n"
-        prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
+        prompt += f"{formatted_context.to_json(orient='records', indent=2)}\n\n"
 
     # add non-context table names, primary keys and data
     if foreign_keys and len(foreign_keys) > 1:
@@ -279,8 +305,16 @@ def _create_table_prompt(
 
             prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
+            # Format dates and datetimes in human-readable format for non-context data
+            formatted_non_context = non_context_data[fk.referenced_table].copy()
+            for col in formatted_non_context.columns:
+                if pd.api.types.is_datetime64_any_dtype(formatted_non_context[col]):
+                    formatted_non_context[col] = formatted_non_context[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                elif pd.api.types.is_period_dtype(formatted_non_context[col]) or pd.api.types.is_datetime64_dtype(formatted_non_context[col]):
+                    formatted_non_context[col] = formatted_non_context[col].dt.strftime('%Y-%m-%d')
+
             prompt += f"## Non-Context Table Data:\n\n"
-            prompt += f"{non_context_data[fk.referenced_table].to_json(orient='records', indent=2)}\n\n"
+            prompt += f"{formatted_non_context.to_json(orient='records', indent=2)}\n\n"
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
