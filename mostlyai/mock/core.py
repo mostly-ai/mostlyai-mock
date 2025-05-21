@@ -399,6 +399,7 @@ def _create_table_rows_generator(
         assert generated_data is not None
         assert context_table_name in generated_data
         context_data = generated_data[context_table_name]
+        batch_size = 1  # generate one sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
