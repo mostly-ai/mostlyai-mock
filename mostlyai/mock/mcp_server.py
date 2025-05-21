@@ -37,7 +37,7 @@ def _store_locally(data: dict[str, pd.DataFrame]) -> dict[str, str]:
 
 
 @mcp.tool(description=SAMPLE_MOCK_TOOL_DESCRIPTION)
-def sample_mock_data(
+def mock_data(
     *,
     tables: dict[str, dict],
     sample_size: int,
