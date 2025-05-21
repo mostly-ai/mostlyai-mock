@@ -18,6 +18,7 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
+import os
 from typing import Any, Literal, Type
 
 import litellm
@@ -384,12 +385,12 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
-    # ensure model supports response_format and json schema
-    supported_params = litellm.get_supported_openai_params(model=llm_config.model)
-    assert "response_format" in supported_params
-    assert litellm.supports_response_schema(llm_config.model), (
-        "The model does not support structured output / JSON mode."
-    )
+    if not llm_config.model.startswith("litellm_proxy/"):
+        # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
+        supported_params = (litellm.get_supported_openai_params(model=llm_config.model) or [])
+        assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
+            "The model does not support structured output / JSON mode."
+        )
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
