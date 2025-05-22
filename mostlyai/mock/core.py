@@ -290,7 +290,7 @@ def _create_table_prompt(
         prompt += f"## Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
         prompt += f"## Context Table Data:\n\n"
-        prompt += f"{context_data.to_json(orient='records', indent=2)}\n\n"
+        prompt += f"{context_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # add non-context table names, primary keys and data
     if foreign_keys and len(foreign_keys) > 1:
@@ -304,7 +304,7 @@ def _create_table_prompt(
             prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
             prompt += f"## Non-Context Table Data:\n\n"
-            prompt += f"{non_context_data[fk.referenced_table].to_json(orient='records', indent=2)}\n\n"
+            prompt += f"{non_context_data[fk.referenced_table].to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
@@ -433,6 +433,7 @@ def _create_table_rows_generator(
         assert generated_data is not None
         assert context_table_name in generated_data
         context_data = generated_data[context_table_name]
+        batch_size = 1  # generate one sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
