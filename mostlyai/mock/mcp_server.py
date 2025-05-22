@@ -2,7 +2,7 @@ import os
 import tempfile
 
 import pandas as pd
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 
 from mostlyai import mock
 
