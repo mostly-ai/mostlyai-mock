@@ -482,20 +482,17 @@ def _create_table_rows_generator(
                 existing_df=pd.DataFrame([row_dict]),  # Pass just this row as the existing data
             )
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
-            
-            # Add debug print to see the prompt being sent
-            print(f"\n{'='*40} PROMPT (ENRICHMENT) {'='*40}\n")
-            print(f"SYSTEM PROMPT:\n{SYSTEM_PROMPT}\n")
-            print(f"USER PROMPT:\n{prompt}\n")
-            print(f"{'='*90}\n")
 
             response = litellm.completion(messages=messages, **litellm_kwargs)
             rows_stream = yield_rows_from_json_chunks_stream(response)
             
             try:
-                row = next(rows_stream)
-                previous_rows.append(row)
-                yield row
+                generated_row = next(rows_stream)
+                # Create a complete row that includes both existing and generated data
+                complete_row = {**row_dict, **generated_row}
+                # Store the complete row in previous_rows, not just the generated values
+                previous_rows.append(complete_row)
+                yield generated_row
             except StopIteration:
                 # If we get no response, still need to generate something
                 # Create an empty row with the correct columns
@@ -525,12 +522,6 @@ def _create_table_rows_generator(
             existing_df=existing_df,
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
-
-        # Add debug print to see the prompt being sent
-        print(f"\n{'='*40} PROMPT {'='*40}\n")
-        print(f"SYSTEM PROMPT:\n{SYSTEM_PROMPT}\n")
-        print(f"USER PROMPT:\n{prompt}\n")
-        print(f"{'='*90}\n")
 
         response = litellm.completion(messages=messages, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
