@@ -18,7 +18,6 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
-import os
 from typing import Any, Literal, Type
 
 import litellm
