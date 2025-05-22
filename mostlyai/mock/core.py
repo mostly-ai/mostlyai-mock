@@ -18,7 +18,6 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
-import os
 from typing import Any, Literal, Type
 
 import litellm
@@ -26,7 +25,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
-SYSTEM_PROMPT = f"""
+SYSTEM_PROMPT = """
 You are a specialized synthetic data generator designed to create
 highly realistic, contextually appropriate data based on schema definitions. Your task is to:
 
@@ -265,7 +264,7 @@ def _create_table_prompt(
 
         prompt += f"## Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
-        prompt += f"## Context Table Data:\n\n"
+        prompt += "## Context Table Data:\n\n"
         prompt += f"{context_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # add non-context table names, primary keys and data
@@ -279,8 +278,10 @@ def _create_table_prompt(
 
             prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
-            prompt += f"## Non-Context Table Data:\n\n"
-            prompt += f"{non_context_data[fk.referenced_table].to_json(orient='records', date_format='iso', indent=2)}\n\n"
+            prompt += "## Non-Context Table Data:\n\n"
+            prompt += (
+                f"{non_context_data[fk.referenced_table].to_json(orient='records', date_format='iso', indent=2)}\n\n"
+            )
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
@@ -303,8 +304,8 @@ def _create_table_prompt(
             "Don't copy previous rows in the output. "
             "Don't pay attention to the number of previous rows; there might have been more generated than provided.\n\n"
         )
-    prompt += f"Do not use code to generate the data.\n\n"
-    prompt += f"Return the full data as a JSON string.\n"
+    prompt += "Do not use code to generate the data.\n\n"
+    prompt += "Return the full data as a JSON string.\n"
 
     return prompt
 
@@ -387,7 +388,7 @@ def _create_table_rows_generator(
 
     if not llm_config.model.startswith("litellm_proxy/"):
         # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
-        supported_params = (litellm.get_supported_openai_params(model=llm_config.model) or [])
+        supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
         assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
             "The model does not support structured output / JSON mode."
         )
