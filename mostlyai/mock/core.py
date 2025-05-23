@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Literal, Type
 
 import litellm
+from litellm.types.utils import LlmProviders
 import pandas as pd
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
@@ -420,7 +421,7 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
-    if not llm_config.model.startswith("litellm_proxy/"):
+    if not llm_config.model.startswith(LlmProviders.LITELLM_PROXY):
         # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
         supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
         assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
@@ -470,7 +471,7 @@ def _create_table_rows_generator(
             row_dict = row.to_dict()
             
             # Create a prompt with this specific row
-            prompt = _create_table_prompt(
+            llm_prompt = _create_table_prompt(
                 name=name,
                 prompt=prompt,
                 columns=columns,
@@ -482,7 +483,7 @@ def _create_table_rows_generator(
                 previous_rows=list(previous_rows),
                 existing_df=pd.DataFrame([row_dict]),  # Pass just this row as the existing data
             )
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
             response = litellm.completion(messages=messages, **litellm_kwargs)
             rows_stream = yield_rows_from_json_chunks_stream(response)
