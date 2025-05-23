@@ -200,8 +200,7 @@ def _sample_table(
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig] | None,
     primary_keys: dict[str, str] | None,
-    seed_data: dict[str, pd.DataFrame] | None,
-    generated_data: dict[str, pd.DataFrame] | None,
+    data: dict[str, pd.DataFrame] | None,
     sample_size: int,
     batch_size: int,
     previous_rows_size: int,
@@ -214,8 +213,7 @@ def _sample_table(
         columns=columns,
         primary_keys=primary_keys,
         foreign_keys=foreign_keys,
-        seed_data=seed_data,
-        generated_data=generated_data,
+        data=data,
         sample_size=sample_size,
         batch_size=batch_size,
         previous_rows_size=previous_rows_size,
@@ -296,6 +294,13 @@ def _create_table_prompt(
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
+
+    prompt += f"Generate data for the `{name}` table.\n\n"
+
+    if not foreign_keys:
+        assert batch_size is not None
+        prompt += f"Generate `{batch_size}` rows.\n\n"
+
     if seed_data is not None:
         prompt += (
             f"You are given existing data for the `{name}` table and asked to generate "
@@ -305,12 +310,8 @@ def _create_table_prompt(
             f"Use the existing columns' values to inform the generation of new values.\n\n"
         )
 
-    if not foreign_keys:
-        assert batch_size is not None
-        prompt += f"Generate {batch_size} rows for the `{name}` table.\n\n"
-    else:
+    if foreign_keys:
         prompt += (
-            f"Generate data for the `{name}` table. "
             f"The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
             f"The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
             f"If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
@@ -718,7 +719,7 @@ def sample(
 
     execution_plan: list[str] = _build_execution_plan(config)
 
-    data: dict[str, pd.DataFrame] = {}
+    data: dict[str, pd.DataFrame] = seed_data or {}
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
@@ -728,8 +729,7 @@ def sample(
             columns=table_config.columns,
             foreign_keys=table_config.foreign_keys,
             primary_keys=primary_keys,
-            seed_data=seed_data,
-            generated_data=data,
+            data=data,
             sample_size=sample_size[table_name],
             batch_size=30,  # generate 30 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
