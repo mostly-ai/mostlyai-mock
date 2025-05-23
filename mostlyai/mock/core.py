@@ -34,12 +34,15 @@ highly realistic, contextually appropriate data based on schema definitions. You
 3. Create contextually appropriate values that reflect real-world patterns and distributions
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
-6. Return well-formatted JSON output that can be directly parsed.
-7. Don't use markdown formatting.
+6. When enriching existing data, ensure that new values are consistent with existing values
+7. Return well-formatted JSON output that can be directly parsed
+8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
 appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
 across tables.
+When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
+to generate compatible and realistic values for the missing columns.
 """
 
 
@@ -197,6 +200,7 @@ def _sample_table(
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig] | None,
     primary_keys: dict[str, str] | None,
+    seed_data: dict[str, pd.DataFrame] | None,
     generated_data: dict[str, pd.DataFrame] | None,
     sample_size: int,
     batch_size: int,
@@ -210,6 +214,7 @@ def _sample_table(
         columns=columns,
         primary_keys=primary_keys,
         foreign_keys=foreign_keys,
+        seed_data=seed_data,
         generated_data=generated_data,
         sample_size=sample_size,
         batch_size=batch_size,
@@ -230,6 +235,7 @@ def _create_table_prompt(
     primary_keys: dict[str, str] | None,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
+    seed_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
     previous_rows: list[dict] | None,
@@ -245,6 +251,11 @@ def _create_table_prompt(
     # add columns specifications
     prompt += "## Columns Specifications:\n\n"
     prompt += f"{json.dumps({name: config.model_dump() for name, config in columns.items()}, indent=2)}\n\n"
+
+    # add existing table data if available
+    if seed_data is not None:
+        prompt += f"## Existing Data to Augment:\n\n"
+        prompt += f"{seed_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
     if previous_rows:
@@ -285,6 +296,15 @@ def _create_table_prompt(
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
+    if seed_data is not None:
+        prompt += (
+            f"You are given existing data for the `{name}` table and asked to generate "
+            f"values for the missing columns. The existing data contains column(s): {', '.join(seed_data.columns)}. "
+            f"You need to generate values for column(s): {', '.join(columns.keys())}. "
+            f"Ensure that the generated values are contextually appropriate and consistent with the existing data. "
+            f"Use the existing columns' values to inform the generation of new values.\n\n"
+        )
+
     if not foreign_keys:
         assert batch_size is not None
         prompt += f"Generate {batch_size} rows for the `{name}` table.\n\n"
@@ -317,7 +337,7 @@ def _create_table_rows_generator(
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig] | None,
     primary_keys: dict[str, str] | None,
-    generated_data: dict[str, pd.DataFrame] | None,
+    data: dict[str, pd.DataFrame],
     sample_size: int,
     batch_size: int,
     previous_rows_size: int,
@@ -393,27 +413,30 @@ def _create_table_rows_generator(
             "The model does not support structured output / JSON mode."
         )
 
+    # derive seed data (if it exists)
+    seed_data: pd.DataFrame | None = None
+    if name in data:
+        seed_data = data[name]
+
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
     if foreign_keys and foreign_keys[0].referenced_table != name:  # self-dependency is not considered as context
         context_table_name = foreign_keys[0].referenced_table
-        assert generated_data is not None
-        assert context_table_name in generated_data
-        context_data = generated_data[context_table_name]
+        assert context_table_name in data
+        context_data = data[context_table_name]
         batch_size = 1  # generate one sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
     if foreign_keys and len(foreign_keys) > 1:
-        assert generated_data is not None
         assert non_context_size is not None
         for fk in foreign_keys[1:]:
             if fk.referenced_table == name:  # self-dependency is not considered as non-context
                 continue
             non_context_table_name = fk.referenced_table
-            assert non_context_table_name in generated_data
-            non_context_data[non_context_table_name] = generated_data[non_context_table_name]
+            assert non_context_table_name in data
+            non_context_data[non_context_table_name] = data[non_context_table_name]
 
     litellm_kwargs = {
         "response_format": create_table_response_format(columns=columns),
@@ -439,6 +462,7 @@ def _create_table_rows_generator(
             primary_keys=primary_keys,
             batch_size=batch_size,
             foreign_keys=foreign_keys,
+            seed_data=seed_data,
             context_data=context_batch,
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
@@ -558,6 +582,7 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
 def sample(
     *,
     tables: dict[str, dict],
+    seed_data: dict[str, pd.DataFrame] | None = None,
     sample_size: int | dict[str, int] = 10,
     model: str = "openai/gpt-4.1-nano",
     api_key: str | None = None,
@@ -703,6 +728,7 @@ def sample(
             columns=table_config.columns,
             foreign_keys=table_config.foreign_keys,
             primary_keys=primary_keys,
+            seed_data=seed_data,
             generated_data=data,
             sample_size=sample_size[table_name],
             batch_size=30,  # generate 30 root table rows at a time
