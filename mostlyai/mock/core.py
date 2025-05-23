@@ -432,7 +432,7 @@ def _create_table_rows_generator(
             if non_context_data
             else None
         )
-        prompt = _create_table_prompt(
+        llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
             columns=columns,
@@ -443,7 +443,7 @@ def _create_table_rows_generator(
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
         )
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
         response = litellm.completion(messages=messages, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
