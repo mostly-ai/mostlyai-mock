@@ -407,7 +407,7 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
-    if not llm_config.model.startswith("litellm_proxy/"):
+    if not llm_config.model.startswith(litellm.LlmProvider.LITELLM_PROXY):
         # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
         supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
         assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
