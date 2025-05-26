@@ -34,12 +34,16 @@ highly realistic, contextually appropriate data based on schema definitions. You
 3. Create contextually appropriate values that reflect real-world patterns and distributions
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
-6. Return well-formatted JSON output that can be directly parsed.
-7. Don't use markdown formatting.
+6. When enriching existing data, ensure that new values are consistent with existing values
+7. Return well-formatted JSON output that can be directly parsed
+8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
 appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
 across tables.
+
+When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
+to generate compatible and realistic values for the missing columns.
 """
 
 
@@ -419,9 +423,11 @@ def _create_table_rows_generator(
             "The model does not support structured output / JSON mode."
         )
 
+    # derive data for augmentation
     existing_data: pd.DataFrame | None = None
     if name in data:
         existing_data = data[name]
+        sample_size = len(existing_data)
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -544,22 +550,13 @@ def _convert_table_rows_generator_to_df(
     return df
 
 
-def _harmonize_sample_size(sample_size: int | dict[str, int], existing_data: dict[str, pd.DataFrame] | None, config: MockConfig) -> dict[str, int]:
-    if existing_data is not None:
-        return {table_name: len(df) for table_name, df in existing_data.items()}
-
+def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig) -> dict[str, int]:
     if isinstance(sample_size, int):
         return {table_name: sample_size for table_name in config.root}
 
     if sample_size.keys() != config.root.keys():
         raise ValueError(f"Sample size keys must match table names: {sample_size.keys()} != {config.root.keys()}")
     return sample_size
-
-def _harmonize_existing_data(existing_data: dict[str, pd.DataFrame] | None, config: MockConfig) -> dict[str, pd.DataFrame] | None:
-    if existing_data is not None:
-        return {table_name: existing_data.get(table_name, pd.DataFrame()) for table_name in config.root}
-    return None
-
 
 def _build_execution_plan(config: MockConfig) -> list[str]:
     def build_dependency_mappings(config: MockConfig) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
@@ -744,13 +741,68 @@ def sample(
     df_orders = data["orders"]
     df_items = data["items"]
     ```
+
+    Example of data augmentation:
+    ```python
+    from mostlyai import mock
+    import pandas as pd
+    
+    tables = {
+        "customers": {
+            "prompt": "Customers of a hardware store",
+            "columns": {
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
+                "email": {"prompt": "email address of the customer", "dtype": "string"},
+                "phone": {"prompt": "phone number of the customer", "dtype": "string"},
+                "loyalty_level": {"dtype": "category", "values": ["bronze", "silver", "gold", "platinum"]},
+            },
+            "primary_key": "customer_id",
+        },
+        "orders": {
+            "prompt": "Orders of a Customer",
+            "columns": {
+                "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "order_date": {"prompt": "the date when the order was placed", "dtype": "date"},
+                "total_amount": {"prompt": "order amount in USD", "dtype": "float"},
+                "status": {"dtype": "category", "values": ["pending", "shipped", "delivered", "cancelled"]},
+            },
+            "primary_key": "order_id",
+            "foreign_keys": [
+                {
+                    "column": "customer_id",
+                    "referenced_table": "customers",
+                    "prompt": "each customer has anywhere between 1 and 3 orders",
+                },
+            ],
+        },
+    }
+    existing_customers = pd.DataFrame({
+        "customer_id": [101, 102, 103],
+        "name": ["John Davis", "Maria Garcia", "Wei Chen"],
+    })
+    existing_orders = pd.DataFrame({
+        "order_id": ["ORD-001", "ORD-002"],
+        "customer_id": [101, 101],
+    })
+    data = mock.sample(
+        tables=tables,
+        existing_data={
+            "customers": existing_customers,
+            "orders": existing_orders,
+        },
+        model="openai/gpt-4.1-nano"
+    )
+    df_customers = data["customers"]
+    df_orders = data["orders"]
+    ```
     """
 
     config = MockConfig(tables)
     llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
 
-    sample_size = _harmonize_sample_size(sample_size, existing_data, config)
-    existing_data = _harmonize_existing_data(existing_data, config)
+    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
 
     execution_plan: list[str] = _build_execution_plan(config)

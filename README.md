@@ -54,7 +54,7 @@ tables = {
     }
 }
 df = mock.sample(
-    tables=tables,  # provide table and column definitions
+    tables=tables,   # provide table and column definitions
     sample_size=10,  # generate 10 records
     model="openai/gpt-4.1-nano",  # select the LLM model (optional)
 )
@@ -134,7 +134,7 @@ tables = {
     },
 }
 data = mock.sample(
-    tables=tables, 
+    tables=tables,
     sample_size=2, 
     model="openai/gpt-4.1"
 )
@@ -204,6 +204,44 @@ print(df)
 # 7            8     Lucas Romero        3                IT Manager
 # 8            9      Priya Desai        3    Lead Software Engineer
 # 9           10    Felix Bennett        3    Senior Systems Analyst
+```
+
+7. Enrich existing data with additional columns
+
+```python
+from mostlyai import mock
+import pandas as pd
+
+tables = {
+    "guests": {
+        "prompt": "Guests of an Alpine ski hotel in Austria",
+        "columns": {
+            "guest_id": {"prompt": "the unique id of the guest", "dtype": "integer"},
+            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+            "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
+            "gender": {"dtype": "category", "values": ["male", "female"]},
+            "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
+            "room_number": {"prompt": "room number", "dtype": "integer"},
+            "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
+        },
+        "primary_key": "guest_id",
+    }
+}
+existing_guests = pd.DataFrame({
+    "guest_id": [1, 2, 3],
+    "name": ["Anna Schmidt", "Marco Rossi", "Sophie Dupont"],
+    "nationality": ["DE", "IT", "FR"],
+})
+df = mock.sample(
+    tables=tables,
+    existing_data={"guests": existing_guests},
+    model="openai/gpt-4.1-nano"
+)
+print(df)
+#    guest_id           name nationality  gender  age  room_number is_vip
+# 0         1   Anna Schmidt          DE  female   29          101   True
+# 1         2    Marco Rossi          IT    male   34          102  False
+# 2         3  Sophie Dupont          FR  female   27          103  False
 ```
 
 ## MCP Server
