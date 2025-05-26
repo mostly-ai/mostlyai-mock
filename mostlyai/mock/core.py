@@ -462,7 +462,6 @@ def _create_table_rows_generator(
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
-
         # pick existing rows for current batch
         existing_batch: pd.DataFrame | None = None
         if existing_data is not None:
@@ -478,12 +477,13 @@ def _create_table_rows_generator(
                 existing_batch = existing_data[existing_data[foreign_key].isin(context_batch[context_primary_key])]
             if existing_batch.empty:
                 existing_batch = None
-                
-        
+
         # sample candidate rows from non-context tables for current batch
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
-            non_context_batch = {table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()}
+            non_context_batch = {
+                table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
+            }
 
         llm_prompt = _create_table_prompt(
             name=name,
@@ -519,7 +519,7 @@ def _create_table_rows_generator(
             yielded_sequences += len(context_batch)
             if yielded_sequences >= sample_size:
                 return  # move to next table
-            
+
         batch_idx += 1
 
 
@@ -557,6 +557,7 @@ def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig
     if sample_size.keys() != config.root.keys():
         raise ValueError(f"Sample size keys must match table names: {sample_size.keys()} != {config.root.keys()}")
     return sample_size
+
 
 def _build_execution_plan(config: MockConfig) -> list[str]:
     def build_dependency_mappings(config: MockConfig) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
@@ -746,7 +747,7 @@ def sample(
     ```python
     from mostlyai import mock
     import pandas as pd
-    
+
     tables = {
         "customers": {
             "prompt": "Customers of a hardware store",
