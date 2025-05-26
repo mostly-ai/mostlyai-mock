@@ -1,6 +1,6 @@
 [project]
 name = "mostlyai-mock"
-version = "0.1.1"
+version = "0.1.2"
 description = "LLM-generated Mock Data"
 authors = [{ name = "MOSTLY AI", email = "dev@mostly.ai" }]
 requires-python = ">=3.10"
