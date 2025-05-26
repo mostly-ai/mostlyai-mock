@@ -197,7 +197,7 @@ def _sample_table(
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig] | None,
     primary_keys: dict[str, str] | None,
-    generated_data: dict[str, pd.DataFrame] | None,
+    data: dict[str, pd.DataFrame],
     sample_size: int,
     batch_size: int,
     previous_rows_size: int,
@@ -210,7 +210,7 @@ def _sample_table(
         columns=columns,
         primary_keys=primary_keys,
         foreign_keys=foreign_keys,
-        generated_data=generated_data,
+        data=data,
         sample_size=sample_size,
         batch_size=batch_size,
         previous_rows_size=previous_rows_size,
@@ -230,6 +230,7 @@ def _create_table_prompt(
     primary_keys: dict[str, str] | None,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig] | None,
+    existing_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
     previous_rows: list[dict] | None,
@@ -250,6 +251,11 @@ def _create_table_prompt(
     if previous_rows:
         prompt += f"\n## Previous {len(previous_rows)} Rows:\n\n"
         prompt += f"{json.dumps(previous_rows, indent=2)}\n\n"
+
+    # add existing data to augment
+    if existing_data is not None:
+        prompt += f"\n## Existing Data to Augment:\n\n"
+        prompt += f"{existing_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # define foreign keys
     if foreign_keys:
@@ -285,26 +291,46 @@ def _create_table_prompt(
 
     # add instructions
     prompt += "\n## Instructions:\n\n"
-    if not foreign_keys:
+
+    verb = "generate" if existing_data is None else "augment"
+
+    n_rows = None
+    if existing_data is not None:
+        n_rows = len(existing_data)
+    elif not foreign_keys:
         assert batch_size is not None
-        prompt += f"Generate {batch_size} rows for the `{name}` table.\n\n"
-    else:
+        n_rows = batch_size
+
+    prompt += f"{verb.capitalize()} data for the `{name}` table.\n\n"
+    if n_rows is not None:
+        prompt += f"Number of rows to {verb}: `{n_rows}`.\n\n"
+
+    if foreign_keys:
         prompt += (
-            f"Generate data for the `{name}` table. "
             f"The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
             f"The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
             f"If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
-            f"In this case, ensure that the generated foreign keys are consistent with generated primary keys of the table. "
+            f"In this case, ensure that the foreign keys are consistent with primary keys of the table. "
             f"Pay attention to prompt of the Foreign Key column to understand the relationship.\n\n"
+        )
+
+    if existing_data is not None:
+        prompt += (
+            f"You are given existing data for the `{name}` table and asked to generate "
+            f"values for the missing columns. The existing data contains column(s): {', '.join(existing_data.columns)}. "
+            f"You need to generate values for column(s): {', '.join(columns.keys() - existing_data.columns)}. "
+            f"Ensure that the generated values are contextually appropriate and consistent with the existing data. "
+            f"Use the existing columns' values to inform the generation of new values. "
+            f"Don't generate new rows, only augment the existing data.\n\n"
         )
 
     if previous_rows:
         prompt += (
-            "Generate new rows that maintain consistency with the previous rows where appropriate. "
+            f"{verb.capitalize()} new rows that maintain consistency with the previous rows where appropriate. "
             "Don't copy previous rows in the output. "
             "Don't pay attention to the number of previous rows; there might have been more generated than provided.\n\n"
         )
-    prompt += "Do not use code to generate the data.\n\n"
+    prompt += f"Do not use code to {verb} the data.\n\n"
     prompt += "Return the full data as a JSON string.\n"
 
     return prompt
@@ -317,7 +343,7 @@ def _create_table_rows_generator(
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig] | None,
     primary_keys: dict[str, str] | None,
-    generated_data: dict[str, pd.DataFrame] | None,
+    data: dict[str, pd.DataFrame],
     sample_size: int,
     batch_size: int,
     previous_rows_size: int,
@@ -393,27 +419,29 @@ def _create_table_rows_generator(
             "The model does not support structured output / JSON mode."
         )
 
+    existing_data: pd.DataFrame | None = None
+    if name in data:
+        existing_data = data[name]
+
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
     if foreign_keys and foreign_keys[0].referenced_table != name:  # self-dependency is not considered as context
         context_table_name = foreign_keys[0].referenced_table
-        assert generated_data is not None
-        assert context_table_name in generated_data
-        context_data = generated_data[context_table_name]
+        assert context_table_name in data
+        context_data = data[context_table_name]
         batch_size = 1  # generate one sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
     if foreign_keys and len(foreign_keys) > 1:
-        assert generated_data is not None
         assert non_context_size is not None
         for fk in foreign_keys[1:]:
             if fk.referenced_table == name:  # self-dependency is not considered as non-context
                 continue
             non_context_table_name = fk.referenced_table
-            assert non_context_table_name in generated_data
-            non_context_data[non_context_table_name] = generated_data[non_context_table_name]
+            assert non_context_table_name in data
+            non_context_data[non_context_table_name] = data[non_context_table_name]
 
     litellm_kwargs = {
         "response_format": create_table_response_format(columns=columns),
@@ -424,14 +452,33 @@ def _create_table_rows_generator(
         "stream": True,
     }
 
+    batch_idx = 0
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
     for context_batch in batch_infinitely(context_data):
-        non_context_batch = (
-            {table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()}
-            if non_context_data
-            else None
-        )
+
+        # pick existing rows for current batch
+        existing_batch: pd.DataFrame | None = None
+        if existing_data is not None:
+            if context_batch is None:
+                # progressively pick portions of existing data in case of root tables
+                assert batch_size is not None
+                existing_batch = existing_data.iloc[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+            else:
+                # pick existing rows that match current context batch
+                assert foreign_keys is not None
+                context_table_name, foreign_key = foreign_keys[0].referenced_table, foreign_keys[0].column
+                context_primary_key = primary_keys[context_table_name]
+                existing_batch = existing_data[existing_data[foreign_key].isin(context_batch[context_primary_key])]
+            if existing_batch.empty:
+                existing_batch = None
+                
+        
+        # sample candidate rows from non-context tables for current batch
+        non_context_batch: dict[str, pd.DataFrame] | None = None
+        if non_context_data:
+            non_context_batch = {table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()}
+
         llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
@@ -439,6 +486,7 @@ def _create_table_rows_generator(
             primary_keys=primary_keys,
             batch_size=batch_size,
             foreign_keys=foreign_keys,
+            existing_data=existing_batch,
             context_data=context_batch,
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
@@ -465,6 +513,8 @@ def _create_table_rows_generator(
             yielded_sequences += len(context_batch)
             if yielded_sequences >= sample_size:
                 return  # move to next table
+            
+        batch_idx += 1
 
 
 def _convert_table_rows_generator_to_df(
@@ -494,13 +544,21 @@ def _convert_table_rows_generator_to_df(
     return df
 
 
-def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig) -> dict[str, int]:
+def _harmonize_sample_size(sample_size: int | dict[str, int], existing_data: dict[str, pd.DataFrame] | None, config: MockConfig) -> dict[str, int]:
+    if existing_data is not None:
+        return {table_name: len(df) for table_name, df in existing_data.items()}
+
     if isinstance(sample_size, int):
         return {table_name: sample_size for table_name in config.root}
 
     if sample_size.keys() != config.root.keys():
         raise ValueError(f"Sample size keys must match table names: {sample_size.keys()} != {config.root.keys()}")
     return sample_size
+
+def _harmonize_existing_data(existing_data: dict[str, pd.DataFrame] | None, config: MockConfig) -> dict[str, pd.DataFrame] | None:
+    if existing_data is not None:
+        return {table_name: existing_data.get(table_name, pd.DataFrame()) for table_name in config.root}
+    return None
 
 
 def _build_execution_plan(config: MockConfig) -> list[str]:
@@ -559,6 +617,7 @@ def sample(
     *,
     tables: dict[str, dict],
     sample_size: int | dict[str, int] = 10,
+    existing_data: dict[str, pd.DataFrame] | None = None,
     model: str = "openai/gpt-4.1-nano",
     api_key: str | None = None,
     temperature: float = 1.0,
@@ -574,7 +633,9 @@ def sample(
             If a single integer is provided, the same number of rows will be generated for each subject table.
             If a dictionary is provided, the number of rows to generate for each subject table can be specified
             individually.
-            Default is 10.
+            Default is 10. Ignored if existing_data is provided.
+        existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
+            Default is None.
         model (str): The LiteLLM chat completion model to be used. Requires support for structured output / JSON mode.
             Examples include:
             - `openai/gpt-4.1-nano` (default)
@@ -688,12 +749,13 @@ def sample(
     config = MockConfig(tables)
     llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
 
-    sample_size = _harmonize_sample_size(sample_size, config)
+    sample_size = _harmonize_sample_size(sample_size, existing_data, config)
+    existing_data = _harmonize_existing_data(existing_data, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
 
     execution_plan: list[str] = _build_execution_plan(config)
 
-    data: dict[str, pd.DataFrame] = {}
+    data: dict[str, pd.DataFrame] = existing_data or {}
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
@@ -703,7 +765,7 @@ def sample(
             columns=table_config.columns,
             foreign_keys=table_config.foreign_keys,
             primary_keys=primary_keys,
-            generated_data=data,
+            data=data,
             sample_size=sample_size[table_name],
             batch_size=30,  # generate 30 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
