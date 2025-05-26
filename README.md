@@ -1,4 +1,4 @@
-# Synthetic Mock Data 🔮
+# LLM-generated Mock Data 🔮
 
 [![Documentation](https://img.shields.io/badge/docs-latest-green)](https://mostly-ai.github.io/mostlyai-mock/) [![stats](https://pepy.tech/badge/mostlyai-mock)](https://pypi.org/project/mostlyai-mock/) ![license](https://img.shields.io/github/license/mostly-ai/mostlyai-mock) ![GitHub Release](https://img.shields.io/github/v/release/mostly-ai/mostlyai-mock)
 
@@ -32,7 +32,7 @@ os.environ["OPENAI_API_KEY"] = "your-api-key"
 
 Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`.
 
-3. Create your first basic synthetic table from scratch
+3. Create your first basic mock table from scratch
 
 ```python
 from mostlyai import mock
@@ -72,7 +72,7 @@ print(df)
 # 9          FR    Louis Martin    male   44    1980-12-05 2025-01-07 10:40:00   False            270.0          103
 ```
 
-4. Create your first multi-table synthetic dataset
+4. Create your first multi-table mock dataset
 
 ```python
 from mostlyai import mock
@@ -167,7 +167,7 @@ print(data["items"])
 # 9  ITM-84312  ORD-11385                   Standard Delivery Service    48.5
 ```
 
-6. Create your first self-referencing synthetic table
+6. Create your first self-referencing mock table
 
 ```python
 from mostlyai import mock

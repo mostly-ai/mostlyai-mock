@@ -26,8 +26,9 @@ from pydantic import BaseModel, Field, RootModel, create_model, field_validator,
 from tqdm import tqdm
 
 SYSTEM_PROMPT = """
-You are a specialized synthetic data generator designed to create
-highly realistic, contextually appropriate data based on schema definitions. Your task is to:
+You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions. 
+
+Your task is to:
 
 1. Generate data that strictly adheres to the provided schema constraints (data types, ranges, formats)
 2. Ensure logical consistency across related tables and foreign key relationships
