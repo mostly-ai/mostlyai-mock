@@ -25,6 +25,8 @@ import pandas as pd
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
+litellm.suppress_debug_info = True
+
 SYSTEM_PROMPT = """
 You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions. 
 
