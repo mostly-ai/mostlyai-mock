@@ -639,9 +639,9 @@ def sample(
             Default is None.
         model (str): The LiteLLM chat completion model to be used. Requires support for structured output / JSON mode.
             Examples include:
-            - `openai/gpt-4.1-nano` (default)
-            - `openai/gpt-4.1-mini`
-            - `openai/gpt-4.1`
+            - `openai/gpt-4.1-nano` (default; fastest)
+            - `openai/gpt-4.1-mini` (slower, but smarter)
+            - `openai/gpt-4.1` (slowest, but smartest)
             - `gemini/gemini-2.0-flash`
             - `gemini/gemini-2.5-flash-preview-04-17`
             - `groq/llama-3.3-70b-versatile`
@@ -690,7 +690,7 @@ def sample(
                 "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",
+            "primary_key": "customer_id",  # single string; no composite keys allowed
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
