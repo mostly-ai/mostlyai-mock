@@ -626,24 +626,25 @@ def sample(
     return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
-    Generate mock data by prompting an LLM.
+    Generate mock data from scratch or enrich existing data by prompting an LLM.
 
     Args:
         tables (dict[str, dict]): The table specifications to generate mock data for. See examples for usage.
         sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
             If a single integer is provided, the same number of rows will be generated for each subject table.
-            If a dictionary is provided, the number of rows to generate for each subject table can be specified
-            individually.
+            If a dictionary is provided, the number of rows to generate for each subject table can be specified individually.
             Default is 10. Ignored if existing_data is provided.
+            If a table has a foreign key, the sample size is determined by the corresponding foreign key prompt. If nothing specified, a few rows per parent record are generated.
         existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
             Default is None.
-        model (str): The LiteLLM chat completion model to be used. Requires support for structured output / JSON mode.
+        model (str): The LiteLLM chat completion model to be used. Model needs to support structured output / JSON mode.
             Examples include:
-            - `openai/gpt-4.1-nano` (default; fastest)
+            - `openai/gpt-4.1-nano` (default; fast, and smart)
             - `openai/gpt-4.1-mini` (slower, but smarter)
             - `openai/gpt-4.1` (slowest, but smartest)
             - `gemini/gemini-2.0-flash`
             - `gemini/gemini-2.5-flash-preview-04-17`
+            - 'groq/gemma2-9b-it`
             - `groq/llama-3.3-70b-versatile`
             - `anthropic/claude-3-7-sonnet-latest`
             See https://docs.litellm.ai/docs/providers/ for more options.
@@ -656,7 +657,7 @@ def sample(
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
         - dict[str, pd.DataFrame]: A dictionary containing the generated mock data for each table, if multiple tables are provided.
 
-    Example of single table (without PK):
+    Example of generating mock data for a single table (without PK):
     ```python
     from mostlyai import mock
 
@@ -679,7 +680,7 @@ def sample(
     df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1-nano")
     ```
 
-    Example of multiple tables (with PK/FK relationships):
+    Example of generating mock data for multiple tables (with PK/FK relationships):
     ```python
     from mostlyai import mock
 
@@ -690,7 +691,7 @@ def sample(
                 "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",  # single string; no composite keys allowed
+            "primary_key": "customer_id",  # only single string is allowed
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
@@ -746,7 +747,36 @@ def sample(
     df_items = data["items"]
     ```
 
-    Example of data augmentation:
+    Example of enriching a single dataframe:
+    ```python
+    from mostlyai import mock
+    import pandas as pd
+
+    tables = {
+        "patients": {
+            "prompt": "Patients of a hospital in Finland",
+            "columns": {
+                "age": {},
+                "gender": {},
+                "full_name": {"prompt": "first name and last name of the patient", "dtype": "string"},
+                "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
+                "place_of_birth": {"prompt": "place of birth", "dtype": "string"},
+            },
+        },
+    }
+    existing_df = pd.DataFrame({
+        "age": [25, 30, 35, 40],
+        "gender": ["male", "male", "female", "female"],
+    })
+    enriched_df = mock.sample(
+        tables=tables, 
+        existing_data={"patients": existing_df},
+        model="openai/gpt-4.1-nano"
+    )
+    enriched_df
+    ```
+
+    Example of enriching / augmenting an existing dataset:
     ```python
     from mostlyai import mock
     import pandas as pd
