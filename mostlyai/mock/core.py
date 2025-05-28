@@ -691,7 +691,7 @@ def sample(
                 "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",  # only single string is allowed
+            "primary_key": "customer_id",  # single string; no composite keys allowed
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
