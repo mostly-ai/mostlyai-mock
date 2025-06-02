@@ -1,8 +1,23 @@
+# Copyright 2025 MOSTLY AI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
 from unittest.mock import patch
 
 import litellm
 import pandas as pd
+
 from mostlyai import mock
 
 litellm_completion = litellm.completion
@@ -10,18 +25,20 @@ litellm_completion = litellm.completion
 
 def test_single_table():
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = {"rows": {
-            "guest_id": 1,
-            "nationality": "US",
-            "name": "John Doe",
-            "gender": "male",
-            "age": 25,
-            "date_of_birth": "1990-01-01",
-            "checkin_time": "2025-05-01 10:00:00",
-            "is_vip": True,
-            "price_per_night": 100.0,
-            "room_number": 101,
-        }}
+        mock_response = {
+            "rows": {
+                "guest_id": 1,
+                "nationality": "US",
+                "name": "John Doe",
+                "gender": "male",
+                "age": 25,
+                "date_of_birth": "1990-01-01",
+                "checkin_time": "2025-05-01 10:00:00",
+                "is_vip": True,
+                "price_per_night": 100.0,
+                "room_number": 101,
+            }
+        }
         return litellm_completion(*args, **kwargs, mock_response=json.dumps(mock_response))
 
     tables = {
@@ -37,7 +54,11 @@ def test_single_table():
                 "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
                 "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
                 "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
-                "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]}
+                "room_number": {
+                    "prompt": "room number",
+                    "dtype": "integer",
+                    "values": [101, 102, 103, 201, 202, 203, 204],
+                },
             },
             "primary_key": "guest_id",
         }

@@ -18,7 +18,7 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
-from typing import Any, Literal, Type
+from typing import Any, Literal
 
 import litellm
 import pandas as pd
@@ -28,7 +28,7 @@ from tqdm import tqdm
 litellm.suppress_debug_info = True
 
 SYSTEM_PROMPT = """
-You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions. 
+You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
 Your task is to:
 
@@ -261,7 +261,7 @@ def _create_table_prompt(
 
     # add existing data to augment
     if existing_data is not None:
-        prompt += f"\n## Existing Data to Augment:\n\n"
+        prompt += "\n## Existing Data to Augment:\n\n"
         prompt += f"{existing_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # define foreign keys
@@ -314,11 +314,11 @@ def _create_table_prompt(
 
     if foreign_keys:
         prompt += (
-            f"The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
-            f"The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
-            f"If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
-            f"In this case, ensure that the foreign keys are consistent with primary keys of the table. "
-            f"Pay attention to prompt of the Foreign Key column to understand the relationship.\n\n"
+            "The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
+            "The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
+            "If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
+            "In this case, ensure that the foreign keys are consistent with primary keys of the table. "
+            "Pay attention to prompt of the Foreign Key column to understand the relationship.\n\n"
         )
 
     if existing_data is not None:
@@ -358,7 +358,7 @@ def _create_table_rows_generator(
     llm_config: LLMConfig,
 ) -> Generator[dict]:
     def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
-        def create_annotation(column_config: ColumnConfig) -> Type:
+        def create_annotation(column_config: ColumnConfig) -> type:
             if column_config.values or column_config.dtype is DType.CATEGORY:
                 return Literal[tuple(column_config.values)]
             return {
@@ -565,6 +565,9 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
             return DType.BOOLEAN
         else:
             return DType.STRING
+
+    if existing_data is None:
+        return tables
 
     tables = tables.copy()
     for table_name, existing_table in existing_data.items():
@@ -794,7 +797,7 @@ def sample(
         "gender": ["male", "male", "female", "female"],
     })
     enriched_df = mock.sample(
-        tables=tables, 
+        tables=tables,
         existing_data={"patients": existing_df},
         model="openai/gpt-4.1-nano"
     )
