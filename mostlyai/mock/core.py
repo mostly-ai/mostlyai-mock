@@ -58,7 +58,7 @@ class LLMConfig(BaseModel):
 
 
 class MockConfig(RootModel[dict[str, "TableConfig"]]):
-    root: dict[str, TableConfig] = Field(..., min_items=1)
+    root: dict[str, TableConfig] = Field(..., min_length=1)
 
     @field_validator("root")
     @classmethod
@@ -127,7 +127,7 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
 class TableConfig(BaseModel):
     prompt: str = ""
-    columns: dict[str, ColumnConfig] = Field(..., min_items=1)
+    columns: dict[str, ColumnConfig] = Field(..., min_length=1)
     primary_key: str | None = None
     foreign_keys: list[ForeignKeyConfig] = Field(default_factory=list)
 
