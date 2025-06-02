@@ -553,6 +553,33 @@ def _convert_table_rows_generator_to_df(
     return df
 
 
+def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataFrame] | None) -> dict[str, dict]:
+    def _infer_dtype(series: pd.Series) -> DType:
+        if pd.api.types.is_integer_dtype(series):
+            return DType.INTEGER
+        elif pd.api.types.is_float_dtype(series):
+            return DType.FLOAT
+        elif pd.api.types.is_datetime64_dtype(series):
+            return DType.DATETIME
+        elif pd.api.types.is_bool_dtype(series):
+            return DType.BOOLEAN
+        else:
+            return DType.STRING
+
+    tables = tables.copy()
+    for table_name, existing_table in existing_data.items():
+        table_config = tables.setdefault(table_name, {})
+        column_configs = table_config.setdefault("columns", {})
+        existing_column_configs = {
+            existing_column: {"dtype": _infer_dtype(existing_table[existing_column])}
+            for existing_column in existing_table.columns
+            if existing_column not in column_configs
+        }
+        column_configs = {**existing_column_configs, **column_configs}
+        table_config["columns"] = column_configs
+    return tables
+
+
 def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig) -> dict[str, int]:
     if isinstance(sample_size, int):
         return {table_name: sample_size for table_name in config.root}
@@ -756,8 +783,6 @@ def sample(
         "patients": {
             "prompt": "Patients of a hospital in Finland",
             "columns": {
-                "age": {},
-                "gender": {},
                 "full_name": {"prompt": "first name and last name of the patient", "dtype": "string"},
                 "date_of_birth": {"prompt": "date of birth", "dtype": "date"},
                 "place_of_birth": {"prompt": "place of birth", "dtype": "string"},
@@ -833,7 +858,9 @@ def sample(
     ```
     """
 
+    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
     config = MockConfig(tables)
+
     llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
 
     sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
