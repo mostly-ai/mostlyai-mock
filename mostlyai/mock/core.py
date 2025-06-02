@@ -488,6 +488,12 @@ def _create_table_rows_generator(
                 table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
             }
 
+        if context_batch is None:
+            # for root tables, scale down batch size in order to prevent excessive generations
+            remaining_rows = sample_size - yielded_sequences
+            if batch_size >= remaining_rows:
+                batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
+
         llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
