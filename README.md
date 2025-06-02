@@ -135,7 +135,7 @@ tables = {
 }
 data = mock.sample(
     tables=tables,
-    sample_size=2, 
+    sample_size=2,
     model="openai/gpt-4.1"
 )
 print(data["customers"])
