@@ -216,9 +216,6 @@ tables = {
     "guests": {
         "prompt": "Guests of an Alpine ski hotel in Austria",
         "columns": {
-            "guest_id": {"prompt": "the unique id of the guest", "dtype": "integer"},
-            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
-            "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
             "gender": {"dtype": "category", "values": ["male", "female"]},
             "age": {"prompt": "age in years; min: 18, max: 80; avg: 25", "dtype": "integer"},
             "room_number": {"prompt": "room number", "dtype": "integer"},
