@@ -1,4 +1,4 @@
-name: "mostlyai CI"
+name: "mostlyai-mock ci-workflow"
 
 on:
   push:
