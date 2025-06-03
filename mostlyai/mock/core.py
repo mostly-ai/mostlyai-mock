@@ -373,9 +373,9 @@ def _create_table_rows_generator(
             }[column_config.dtype]
 
         fields = {}
-        for i, column_config in enumerate(columns.values()):
+        for column_idx, column_config in enumerate(columns.values()):
             annotation = create_annotation(column_config)
-            fields[str(i)] = (annotation, Field(...))
+            fields[str(column_idx)] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
