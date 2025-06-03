@@ -319,7 +319,8 @@ def _create_table_prompt(
 
     if foreign_keys:
         prompt += (
-            "The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data. "
+            "The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data (never use values from Previous Rows section, if exists). "
+            "Respect the prompt of the Foreign Key column to understand the relationship, in particular the number of rows to generate. "
             "The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
             "If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
             "In this case, ensure that the foreign keys are consistent with primary keys of the table. "
@@ -460,7 +461,6 @@ def _create_table_rows_generator(
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
     litellm_kwargs = {
-        "response_format": create_table_response_format(columns=columns, existing_data=existing_data),
         "temperature": llm_config.temperature,
         "top_p": llm_config.top_p,
         "model": llm_config.model,
@@ -501,6 +501,8 @@ def _create_table_rows_generator(
             if batch_size >= remaining_rows:
                 batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
 
+        response_format = create_table_response_format(columns=columns, existing_data=existing_batch)
+
         llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
@@ -515,7 +517,7 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
-        response = litellm.completion(messages=messages, **litellm_kwargs)
+        response = litellm.completion(messages=messages, response_format=response_format, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
 
         batch_row_idx = 0
