@@ -339,8 +339,7 @@ def _create_table_prompt(
         )
     prompt += f"Do not use code to {verb} the data.\n\n"
 
-    column_to_number = {column_name: i for i, column_name in enumerate(columns.keys())}
-    prompt += f"Return the full data as a JSON string. Map column names to numbers:\n{column_to_number}\n"
+    prompt += "Return the full data as a JSON string. Map column names to numbers.\n"
     return prompt
 
 
