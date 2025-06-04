@@ -15,4 +15,4 @@
 from mostlyai.mock.core import sample
 
 __all__ = ["sample"]
-__version__ = "0.1.5"  # Do not set this manually. Use poetry version [params].
+__version__ = "0.1.6"  # Do not set this manually. Use poetry version [params].
