@@ -460,12 +460,12 @@ def _create_table_rows_generator(
     def completion_with_retries(*args, **kwargs):
         n_attempts = 3
 
-        def print_retry_state(retry_state):
+        def print_on_retry(_):
             print(" * Trying again... * ", end="", flush=True)
 
         # try up to 3 times, print a message to the user on each retry
         retryer = tenacity.Retrying(
-            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_retry_state
+            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
         )
         return retryer(litellm.completion, *args, **kwargs)
 
