@@ -375,8 +375,8 @@ def _create_table_prompt(
         )
 
     prompt += f"Do not use code to {verb} the data.\n\n"
-    prompt += "Return the full data as a JSON string.\n"
 
+    prompt += "Return the full data as a JSON string. Map column names to numbers.\n"
     return prompt
 
 
@@ -410,9 +410,9 @@ def _create_table_rows_generator(
             }[column_config.dtype]
 
         fields = {}
-        for column_name, column_config in columns.items():
+        for column_idx, column_config in enumerate(columns.values()):
             annotation = create_annotation(column_config)
-            fields[column_name] = (annotation, Field(...))
+            fields[str(column_idx)] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
@@ -592,6 +592,7 @@ def _convert_table_rows_generator_to_df(
         return df
 
     df = pd.DataFrame(list(table_rows_generator))
+    df.columns = columns.keys()
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
