@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import litellm
 import pandas as pd
+import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
@@ -246,57 +247,85 @@ def _create_table_prompt(
     prompt = f"# {prompt}\n\n"
 
     # define table
-    prompt += f"## Table: {name}\n\n"
+    prompt += f"## Target Table: `{name}`\n\n"
 
-    prompt += f"## Table Primary Key: `{primary_keys[name]}`\n\n"
+    prompt += f"### Target Table Primary Key: `{primary_keys[name]}`\n\n"
 
     # add columns specifications
-    prompt += "## Column Specifications:\n\n"
-    column_specifications = {name: config.model_dump() for name, config in columns.items()}
+    prompt += "### Target Table Column Specifications:\n\n"
+    column_specifications = {
+        name: config.model_dump(exclude_defaults=True, exclude_unset=True, exclude_none=True)
+        for name, config in columns.items()
+    }
     if existing_data is not None:
+        # do not generate values for columns that already exist in existing data
         column_specifications = {
             column: spec for column, spec in column_specifications.items() if column not in existing_data.columns
         }
     prompt += f"{json.dumps(column_specifications, indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
+    has_previous_rows_section = False
     if previous_rows:
-        prompt += f"\n## Previous {len(previous_rows)} Rows:\n\n"
+        has_previous_rows_section = True
+        prompt += f"\n## Previous `{len(previous_rows)}` Rows of Target Table `{name}`:\n\n"
         prompt += f"{json.dumps(previous_rows, indent=2)}\n\n"
 
     # add existing data to augment
+    has_existing_data_section = False
     if existing_data is not None:
-        prompt += "\n## Existing Data to Augment:\n\n"
+        has_existing_data_section = True
+        prompt += f"\n## Existing Data of Target Table `{name}` to Augment:\n\n"
         prompt += f"{existing_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
-    # define foreign keys
-    if foreign_keys:
-        prompt += "## Foreign Keys:\n\n"
-        prompt += f"{json.dumps([fk.model_dump() for fk in foreign_keys], indent=2)}\n\n"
+    # define self referencing foreign keys
+    has_self_referencing_foreign_keys_section = False
+    self_referencing_foreign_keys = [fk for fk in foreign_keys if fk.referenced_table == name]
+    if self_referencing_foreign_keys:
+        has_self_referencing_foreign_keys_section = True
+        prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
+        for fk in self_referencing_foreign_keys:
+            prompt += f"### Primary Key Column: `{primary_keys[name]}`\n\n"
+
+            prompt += f"### Foreign Key Column: `{fk.column}`\n\n"
+
+            prompt += f"### Description of the Relationship: `{fk.prompt}`\n\n"
+
+    foreign_keys = [fk for fk in foreign_keys if fk.referenced_table != name]  # exclude self-dependency going forward
 
     # add context table name, primary key and data
-    if foreign_keys and foreign_keys[0].referenced_table != name:  # self-dependency is not considered as context
+    has_context_table_section = False
+    if foreign_keys:
+        has_context_table_section = True
         assert context_data is not None
         fk = foreign_keys[0]
         prompt += f"## Context Table: `{fk.referenced_table}`\n\n"
 
-        prompt += f"## Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
+        prompt += f"### Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
-        prompt += "## Context Table Data:\n\n"
+        prompt += f"### Foreign Key Column in Target Table `{name}`: `{fk.column}`\n\n"
+
+        prompt += f"### Description of the Relationship: `{fk.prompt}`\n\n"
+
+        prompt += "### Context Table Data:\n\n"
         prompt += f"{context_data.to_json(orient='records', date_format='iso', indent=2)}\n\n"
 
     # add non-context table names, primary keys and data
+    has_non_context_tables_section = False
     if foreign_keys and len(foreign_keys) > 1:
+        has_non_context_tables_section = True
         for fk in foreign_keys[1:]:
-            if fk.referenced_table == name:  # self-dependency is not considered as non-context
-                continue
             assert non_context_data is not None
             assert fk.referenced_table in non_context_data
             prompt += f"## Non-Context Table: `{fk.referenced_table}`\n\n"
 
-            prompt += f"## Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
+            prompt += f"### Non-Context Table Primary Key: `{primary_keys[fk.referenced_table]}`\n\n"
 
-            prompt += "## Non-Context Table Data:\n\n"
+            prompt += f"### Foreign Key Column in Target Table `{name}`: `{fk.column}`\n\n"
+
+            prompt += f"### Description of the Relationship: `{fk.prompt}`\n\n"
+
+            prompt += "### Non-Context Table Data:\n\n"
             prompt += (
                 f"{non_context_data[fk.referenced_table].to_json(orient='records', date_format='iso', indent=2)}\n\n"
             )
@@ -309,25 +338,35 @@ def _create_table_prompt(
     n_rows = None
     if existing_data is not None:
         n_rows = len(existing_data)
-    elif not foreign_keys:
+    elif not foreign_keys and not self_referencing_foreign_keys:
         assert batch_size is not None
         n_rows = batch_size
 
-    prompt += f"{verb.capitalize()} data for the `{name}` table.\n\n"
+    prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
         prompt += f"Number of rows to {verb}: `{n_rows}`.\n\n"
 
-    if foreign_keys:
-        prompt += (
-            "The first Foreign Key column from Foreign Keys section may only contain values from Context Table Data (never use values from Previous Rows section, if exists). "
-            "Respect the prompt of the Foreign Key column to understand the relationship, in particular the number of rows to generate. "
-            "The following Foreign Key columns from Foreign Keys section (if exists) may only contain values from Non-Context Table Data sections. "
-            "If either relevant Context Table Data or Non-Context Table Data is not present, this means that table has self-dependency. "
-            "In this case, ensure that the foreign keys are consistent with primary keys of the table. "
-            "Pay attention to prompt of the Foreign Key column to understand the relationship.\n\n"
-        )
+    if has_context_table_section:
+        assert foreign_keys
+        prompt += f"Target Table Foreign Key column `{foreign_keys[0].column}` may only contain values from `Context Table Data`."
+        if has_previous_rows_section:
+            prompt += " Never use values from `Previous Rows of Target Table` section."
+        prompt += " Respect the `Description of the Relationship` of `Context Table` section to understand the relationship, in particular the number of rows to generate."
+        prompt += "\n\n"
 
-    if existing_data is not None:
+    if has_self_referencing_foreign_keys_section:
+        prompt += "Target Table Self Referencing Foreign Key columns defined in `Self Referencing Foreign Keys` must be consistent with the `Target Table Primary Key`."
+        prompt += " Respect the `Description of the Relationship` of `Self Referencing Foreign Keys` section to understand the relationship."
+        prompt += "\n\n"
+
+    if has_non_context_tables_section:
+        assert len(foreign_keys) > 1
+        prompt += "All other Target Table Foreign Key columns may only contain values from `Non-Context Table Data` of relevant `Non-Context Table` sections."
+        prompt += " Respect the `Description of the Relationship` of relevant `Non-Context Table` section to understand the relationship."
+        prompt += "\n\n"
+
+    if has_existing_data_section:
+        assert existing_data is not None
         prompt += (
             f"You are given existing data for the `{name}` table and asked to generate "
             f"values for the missing columns. The existing data contains column(s): {', '.join(existing_data.columns)}. "
@@ -337,12 +376,14 @@ def _create_table_prompt(
             f"Don't generate new rows, only augment the existing data.\n\n"
         )
 
-    if previous_rows:
+    if has_previous_rows_section:
+        assert previous_rows is not None
         prompt += (
             f"{verb.capitalize()} new rows that maintain consistency with the previous rows where appropriate. "
             "Don't copy previous rows in the output. "
             "Don't pay attention to the number of previous rows; there might have been more generated than provided.\n\n"
         )
+
     prompt += f"Do not use code to {verb} the data.\n\n"
     prompt += f"Return the {'full' if existing_data is None else 'new'} data as a JSON string.\n"
 
@@ -426,6 +467,18 @@ def _create_table_rows_generator(
             else:
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
+
+    def completion_with_retries(*args, **kwargs):
+        n_attempts = 3
+
+        def print_on_retry(_):
+            print(" * Trying again... * ", end="", flush=True)
+
+        # try up to 3 times, print a message to the user on each retry
+        retryer = tenacity.Retrying(
+            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
+        )
+        return retryer(litellm.completion, *args, **kwargs)
 
     if not llm_config.model.startswith("litellm_proxy/"):
         # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
@@ -517,7 +570,7 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
-        response = litellm.completion(messages=messages, response_format=response_format, **litellm_kwargs)
+        response = completion_with_retries(messages=messages, response_format=response_format, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
 
         batch_row_idx = 0
@@ -903,7 +956,7 @@ def sample(
             primary_keys=primary_keys,
             data=data,
             sample_size=sample_size[table_name],
-            batch_size=30,  # generate 30 root table rows at a time
+            batch_size=20,  # generate 20 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             llm_config=llm_config,
