@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import litellm
 import pandas as pd
+import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
@@ -456,6 +457,18 @@ def _create_table_rows_generator(
                 for i in range(0, len(data), batch_size):
                     yield data.iloc[i : i + batch_size]
 
+    def completion_with_retries(*args, **kwargs):
+        n_attempts = 3
+
+        def print_on_retry(_):
+            print(" * Trying again... * ", end="", flush=True)
+
+        # try up to 3 times, print a message to the user on each retry
+        retryer = tenacity.Retrying(
+            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
+        )
+        return retryer(litellm.completion, *args, **kwargs)
+
     if not llm_config.model.startswith("litellm_proxy/"):
         # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
         supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
@@ -545,7 +558,7 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
-        response = litellm.completion(messages=messages, **litellm_kwargs)
+        response = completion_with_retries(messages=messages, **litellm_kwargs)
         rows_stream = yield_rows_from_json_chunks_stream(response)
 
         while True:
