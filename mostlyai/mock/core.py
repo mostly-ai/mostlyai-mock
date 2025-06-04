@@ -370,8 +370,8 @@ def _create_table_prompt(
         assert existing_data is not None
         prompt += (
             f"You are given existing data for the `{name}` table and asked to generate "
-            f"values for the missing columns. The existing data contains column(s): {', '.join(existing_data.columns)}. "
-            f"You need to generate values for column(s): {', '.join(columns.keys() - existing_data.columns)}. "
+            f"values for the missing columns. The existing data contains column(s): {list(existing_data.columns)}. "
+            f"You need to generate values for column(s): {list(columns.keys() - existing_data.columns)}. "
             f"Ensure that the generated values are contextually appropriate and consistent with the existing data. "
             f"Use the existing columns' values to inform the generation of new values. "
             f"Don't generate new rows, only augment the existing data.\n\n"
@@ -386,8 +386,15 @@ def _create_table_prompt(
         )
 
     prompt += f"Do not use code to {verb} the data.\n\n"
-    prompt += f"Return the {'full' if existing_data is None else 'new'} data as a JSON string.\n"
 
+    prompt += "Return data as a JSON string."
+    prompt += " The JSON string should have 'rows' key at the top level. The value of 'rows' key should be a list of JSON objects."
+    prompt += " Each JSON object should have column names as keys and values as column values."
+    if existing_data is not None:
+        prompt += (
+            f" Only include the following columns in the JSON string: {list(columns.keys() - existing_data.columns)}."
+        )
+    prompt += "\n"
     return prompt
 
 
