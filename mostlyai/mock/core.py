@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections import deque
 from collections.abc import Generator
@@ -253,7 +254,16 @@ def _create_table_prompt(
 
     # add columns specifications
     prompt += "### Target Table Column Specifications:\n\n"
-    prompt += f"{json.dumps({name: config.model_dump(exclude_defaults=True, exclude_unset=True, exclude_none=True) for name, config in columns.items()}, indent=2)}\n\n"
+    column_specifications = {
+        name: config.model_dump(exclude_defaults=True, exclude_unset=True, exclude_none=True)
+        for name, config in columns.items()
+    }
+    if existing_data is not None:
+        # do not generate values for columns that already exist in existing data
+        column_specifications = {
+            column: spec for column, spec in column_specifications.items() if column not in existing_data.columns
+        }
+    prompt += f"{json.dumps(column_specifications, indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
     has_previous_rows_section = False
@@ -360,8 +370,8 @@ def _create_table_prompt(
         assert existing_data is not None
         prompt += (
             f"You are given existing data for the `{name}` table and asked to generate "
-            f"values for the missing columns. The existing data contains column(s): {', '.join(existing_data.columns)}. "
-            f"You need to generate values for column(s): {', '.join(columns.keys() - existing_data.columns)}. "
+            f"values for the missing columns. The existing data contains column(s): {list(existing_data.columns)}. "
+            f"You need to generate values for column(s): {list(columns.keys() - existing_data.columns)}. "
             f"Ensure that the generated values are contextually appropriate and consistent with the existing data. "
             f"Use the existing columns' values to inform the generation of new values. "
             f"Don't generate new rows, only augment the existing data.\n\n"
@@ -376,8 +386,15 @@ def _create_table_prompt(
         )
 
     prompt += f"Do not use code to {verb} the data.\n\n"
-    prompt += "Return the full data as a JSON string.\n"
 
+    prompt += "Return data as a JSON string."
+    prompt += " The JSON string should have 'rows' key at the top level. The value of 'rows' key should be a list of JSON objects."
+    prompt += " Each JSON object should have column names as keys and values as column values."
+    if existing_data is not None:
+        prompt += (
+            f" Only include the following columns in the JSON string: {list(columns.keys() - existing_data.columns)}."
+        )
+    prompt += "\n"
     return prompt
 
 
@@ -395,7 +412,9 @@ def _create_table_rows_generator(
     non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
-    def create_table_response_format(columns: dict[str, ColumnConfig]) -> BaseModel:
+    def create_table_response_format(
+        columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+    ) -> tuple[type[BaseModel], int]:
         def create_annotation(column_config: ColumnConfig) -> type:
             if column_config.values or column_config.dtype is DType.CATEGORY:
                 return Literal[tuple(column_config.values)]
@@ -412,11 +431,14 @@ def _create_table_rows_generator(
 
         fields = {}
         for column_name, column_config in columns.items():
+            if existing_data is not None and column_name in existing_data.columns:
+                continue  # skip columns that already exist in existing data
             annotation = create_annotation(column_config)
             fields[column_name] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
-        return TableRows
+        n_enforced_columns = len(fields)
+        return TableRows, n_enforced_columns
 
     def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
@@ -503,7 +525,6 @@ def _create_table_rows_generator(
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
     litellm_kwargs = {
-        "response_format": create_table_response_format(columns=columns),
         "temperature": llm_config.temperature,
         "top_p": llm_config.top_p,
         "model": llm_config.model,
@@ -544,6 +565,10 @@ def _create_table_rows_generator(
             if batch_size >= remaining_rows:
                 batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
 
+        response_format, n_enforced_columns = create_table_response_format(
+            columns=columns, existing_data=existing_batch
+        )
+
         llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
@@ -558,12 +583,20 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
-        response = completion_with_retries(messages=messages, **litellm_kwargs)
-        rows_stream = yield_rows_from_json_chunks_stream(response)
+        if n_enforced_columns != 0:
+            response = completion_with_retries(messages=messages, response_format=response_format, **litellm_kwargs)
+            rows_stream = yield_rows_from_json_chunks_stream(response)
+        else:
+            # skip roundtrip to LLM in case all columns are provided in existing data
+            rows_stream = itertools.repeat({})
 
+        batch_row_idx = 0
         while True:
             try:
-                row = next(rows_stream)
+                row_generated_part = next(rows_stream)
+                row_existing_part = existing_batch.iloc[batch_row_idx].to_dict() if existing_batch is not None else {}
+                row = {**row_existing_part, **row_generated_part}
+                row = {column: row[column] for column in columns.keys()}  # keep columns order according to user's spec
             except StopIteration:
                 break  # move to next batch
             previous_rows.append(row)
@@ -573,6 +606,7 @@ def _create_table_rows_generator(
                 yielded_sequences += 1
                 if yielded_sequences >= sample_size:
                     return  # move to next table
+            batch_row_idx += 1
         if context_batch is not None:
             # for each context_batch, full sequences are generated
             yielded_sequences += len(context_batch)
