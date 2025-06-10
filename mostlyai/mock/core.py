@@ -748,7 +748,7 @@ def sample(
     """
     Generate mock data from scratch or enrich existing data by prompting an LLM.
 
-    While faker and numpy are useful to create fake data, this utility is unique as it allows 
+    While faker and numpy are useful to create fake data, this utility is unique as it allows
     the creation of coherent, realistic multi-table tabular mock data
     or the enrichment of existing datasets with new, context-aware columns.
 
