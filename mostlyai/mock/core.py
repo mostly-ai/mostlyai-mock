@@ -737,7 +737,7 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
 def sample(
     *,
     tables: dict[str, dict],
-    sample_size: int | dict[str, int] = 10,
+    sample_size: int | dict[str, int] = 4,
     existing_data: dict[str, pd.DataFrame] | None = None,
     model: str = "openai/gpt-4.1-nano",
     api_key: str | None = None,
@@ -748,12 +748,20 @@ def sample(
     """
     Generate mock data from scratch or enrich existing data by prompting an LLM.
 
+    While faker and numpy are useful to create fake data, this utility is unique as it allows
+    the creation of coherent, realistic multi-table tabular mock data
+    or the enrichment of existing datasets with new, context-aware columns.
+
+    It is particularly useful for quickly simulating production-like datasets for testing or prototyping purposes.
+    It is advised to limit mocking to small datasets for performance reasons (rows * cols < 100).
+    It might take a couple of minutes for bigger datasets.
+
     Args:
         tables (dict[str, dict]): The table specifications to generate mock data for. See examples for usage.
         sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
             If a single integer is provided, the same number of rows will be generated for each subject table.
             If a dictionary is provided, the number of rows to generate for each subject table can be specified individually.
-            Default is 10. Ignored if existing_data is provided.
+            Default is 4. Ignored if existing_data is provided.
             If a table has a foreign key, the sample size is determined by the corresponding foreign key prompt. If nothing specified, a few rows per parent record are generated.
         existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
             Default is None.
