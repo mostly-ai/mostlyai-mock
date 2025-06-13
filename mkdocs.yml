@@ -52,6 +52,14 @@ plugins:
             extensions:
             - griffe_fieldz
             docstring_style: google
+  - llmstxt:
+      full_output: llms-full.txt
+      markdown_description: Create data out of nothing. Prompt LLMs for Tabular Data.
+      sections:
+        Usage documentation:
+        - index.md
+        API Reference:
+          - api.md
 
 markdown_extensions:
   - pymdownx.highlight:
