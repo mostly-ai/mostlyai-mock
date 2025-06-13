@@ -1,0 +1,12 @@
+# mostlyai-mock
+
+Create data out of nothing. Prompt LLMs for Tabular Data.
+
+## Usage documentation
+
+- [Getting started](https://mostly-ai.github.io/mostlyai-mock/index.md)
+
+## API Reference
+
+- [API Reference](https://mostly-ai.github.io/mostlyai-mock/api/index.md)
+
