@@ -51,7 +51,7 @@ plugins:
             docstring_section_style: table
             extensions:
             - griffe_fieldz
-            docstring_style: google            
+            docstring_style: google
   - llmstxt:
       full_output: llms-full.txt
       markdown_description: Create data out of nothing. Prompt LLMs for Tabular Data.
