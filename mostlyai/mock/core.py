@@ -541,13 +541,14 @@ def _create_table_rows_generator(
         )
         return retryer(litellm.completion, *args, **kwargs)
 
-    batch_size = 30  # generate / augment 30 root table rows at a time
+    batch_size = 30  # generate 30 root table rows at a time
 
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
     if name in data:
         existing_data = data[name]
         sample_size = len(existing_data)
+        batch_size = 10  # augment 10 root table rows at a time
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -622,6 +623,11 @@ def _create_table_rows_generator(
             if existing_batch.empty:
                 existing_batch = None
 
+        # resolve columns to generate
+        generated_columns = set(columns.keys())
+        if existing_batch is not None:
+            generated_columns = generated_columns - set(existing_batch.columns)
+
         # sample candidate rows from non-context tables for current batch
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
@@ -655,9 +661,7 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
-        n_existing_columns = len(existing_batch.columns) if existing_batch is not None else 0
-        n_columns_to_generate = len(columns) - n_existing_columns
-        if n_columns_to_generate > 0:
+        if len(generated_columns) > 0:
             response = completion_with_retries(
                 messages=messages, response_format=structured_output_schema, **litellm_kwargs
             )
@@ -670,8 +674,7 @@ def _create_table_rows_generator(
             # skip roundtrip to LLM in case all columns are provided in existing data
             rows_stream = itertools.repeat({})
 
-        rows = []
-        row_idx = 0
+        yielded_rows = []
         while True:  # iterate over rows in current batch
             rows_generated_part = []
             if existing_batch is not None:
@@ -689,10 +692,11 @@ def _create_table_rows_generator(
                     row_generated_part = next(rows_stream)
                 except StopIteration:
                     break
-            for row_generated_part in rows_generated_part:
-                if "_ROW_IDX" in row_generated_part:
-                    # remove internal counter column
-                    del row_generated_part["_ROW_IDX"]
+
+            rows = []
+            for row_idx, row_generated_part in enumerate(rows_generated_part):
+                # remove internal columns, if exist
+                row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
                 row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
                 row = {**row_generated_part, **row_existing_part}
                 if set(row.keys()) != set(columns.keys()):
@@ -701,14 +705,17 @@ def _create_table_rows_generator(
                     do_repeat_previous_batch = True
                     break
                 row = {column: row[column] for column in columns.keys()}  # keep columns order according to user's spec
+                rows.append(row)
+
+            for row in rows:
                 yield row
                 if context_batch is None:
                     # each subject row is considered a single sequence
                     yielded_sequences += 1
                     if yielded_sequences >= sample_size:
                         return  # move to next table
-                rows.append(row)
-                row_idx += 1
+                yielded_rows.append(row)
+
             if existing_batch is not None:
                 # in case of data enrichment, all rows are yielded already during the first iteration
                 break
@@ -716,7 +723,7 @@ def _create_table_rows_generator(
         if do_repeat_previous_batch:
             continue
 
-        previous_rows.extend(rows)
+        previous_rows.extend(yielded_rows)
 
         if context_batch is not None:
             # for each context_batch, full sequences are generated
