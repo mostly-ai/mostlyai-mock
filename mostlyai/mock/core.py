@@ -19,6 +19,7 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
+from io import StringIO
 from typing import Any, Literal
 
 import litellm
@@ -410,6 +411,7 @@ def _create_table_prompt(
         prompt += " The CSV string should have a header row with column names."
         prompt += " The CSV string should have a data row for each row to be generated."
         prompt += " The CSV string should have a newline character at the end of each row."
+        prompt += " Each value in the CSV string should be enclosed in double quotes."
 
     if existing_data is not None:
         prompt += f" Only include the following columns in the {llm_output_format} string: {list(columns.keys() - existing_data.columns)}."
@@ -503,17 +505,16 @@ def _create_table_rows_generator(
             for char in delta:
                 buffer += char
                 if char == "\n":
+                    row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
                     if header is None:
                         # column1,column2,column3\n
                         #                        ** <- end of header row
-                        header = buffer[:-1].split(",")
-                        buffer = ""
+                        header = row
                     else:
                         # value_1,value_2,value_3\n
                         #                        ** <- end of data row
-                        row = buffer[:-1].split(",")
-                        yield {header[i]: row[i] for i in range(len(header))}
-                        buffer = ""
+                        yield dict(zip(header, row))
+                    buffer = ""
 
     def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
         while True:
