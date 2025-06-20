@@ -24,13 +24,13 @@ from typing import Any, Literal
 import litellm
 import pandas as pd
 import tenacity
-from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
+from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm import tqdm
 
 litellm.suppress_debug_info = True
 
 
-class ResponseFormat(str, Enum):
+class DataFormat(str, Enum):
     JSON = "JSON"
     CSV = "CSV"
 
@@ -220,7 +220,7 @@ def _sample_table(
     return table_df
 
 
-def _create_system_prompt(response_format: ResponseFormat) -> str:
+def _create_system_prompt(data_format: DataFormat) -> str:
     return f"""
 You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
@@ -232,7 +232,7 @@ Your task is to:
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
 6. When enriching existing data, ensure that new values are consistent with existing values
-7. Return well-formatted {response_format} output that can be directly parsed
+7. Return well-formatted {data_format} output that can be directly parsed
 8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
@@ -256,7 +256,7 @@ def _create_table_prompt(
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
     previous_rows: list[dict] | None,
-    response_format: ResponseFormat,
+    data_format: DataFormat,
 ) -> str:
     # add table prompt
     prompt = f"# {prompt}\n\n"
@@ -401,18 +401,18 @@ def _create_table_prompt(
 
     prompt += f"Do not use code to {verb} the data.\n\n"
 
-    prompt += f"Return data as a {response_format} string."
-    if response_format == "JSON":
+    prompt += f"Return data as a {data_format} string."
+    if data_format == DataFormat.JSON:
         prompt += " The JSON string should have 'rows' key at the top level."
         prompt += " The value of 'rows' key should be a list of JSON objects."
         prompt += " Each JSON object should have column names as keys and values as column values."
-    else:  # response_format == "CSV"
+    else:  # data_format == DataFormat.CSV
         prompt += " The CSV string should have a header row with column names."
         prompt += " The CSV string should have a data row for each row to be generated."
         prompt += " The CSV string should have a newline character at the end of each row."
 
     if existing_data is not None:
-        prompt += f" Only include the following columns in the {response_format} string: {list(columns.keys() - existing_data.columns)}."
+        prompt += f" Only include the following columns in the {data_format} string: {list(columns.keys() - existing_data.columns)}."
     prompt += "\n"
     return prompt
 
@@ -431,6 +431,37 @@ def _create_table_rows_generator(
     non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
+    def supports_structured_outputs(model: str) -> bool:
+        supported_params = litellm.get_supported_openai_params(model=model) or []
+        return "response_format" in supported_params and litellm.supports_response_schema(model)
+
+    def create_structured_output_schema(
+        columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+    ) -> type[BaseModel]:
+        def create_annotation(column_config: ColumnConfig) -> type:
+            if column_config.values or column_config.dtype is DType.CATEGORY:
+                return Literal[tuple(column_config.values)]
+            return {
+                DType.INTEGER: int | None,
+                DType.FLOAT: float | None,
+                DType.STRING: str | None,
+                DType.BOOLEAN: bool | None,
+                # response_format has limited support for JSON Schema features
+                # thus we represent dates and datetimes as strings
+                DType.DATE: str | None,
+                DType.DATETIME: str | None,
+            }[column_config.dtype]
+
+        fields = {}
+        for column_name, column_config in columns.items():
+            if existing_data is not None and column_name in existing_data.columns:
+                continue  # skip columns that already exist in existing data
+            annotation = create_annotation(column_config)
+            fields[column_name] = (annotation, Field(...))
+        TableRow = create_model("TableRow", **fields)
+        TableRows = create_model("TableRows", rows=(list[TableRow], ...))
+        return TableRows
+
     def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
@@ -545,15 +576,22 @@ def _create_table_rows_generator(
     context_batch = None
     do_repeat_previous_batch = False
     n_repeated_batches = 0
-    response_format = "CSV"
+    data_format = DataFormat.CSV
     while True:  # iterate over batches
         # pick next context batch or repeat the previous one
         context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
         n_repeated_batches += int(do_repeat_previous_batch)
-        if response_format == "CSV" and n_repeated_batches > 3:  # TODO: check if model support structured outputs
-            print(" * Falling back to JSON response format and Structured Outputs... * ", end="", flush=True)
-            response_format = "JSON"
         do_repeat_previous_batch = False
+
+        # fallback to JSON with Structured Outputs if CSV generation fails too often
+        if (
+            data_format == DataFormat.CSV
+            and supports_structured_outputs(model=llm_config.model)
+            and n_repeated_batches >= 3
+        ):
+            print(" * Falling back to JSON with Structured Outputs... * ", end="", flush=True)
+            data_format = DataFormat.JSON
+
         # pick existing rows for current batch
         existing_batch: pd.DataFrame | None = None
         if existing_data is not None:
@@ -583,8 +621,12 @@ def _create_table_rows_generator(
             if batch_size >= remaining_rows:
                 batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
 
-        system_prompt = _create_system_prompt(response_format)
-        llm_prompt = _create_table_prompt(
+        structured_output_schema = None
+        if data_format == DataFormat.JSON:
+            structured_output_schema = create_structured_output_schema(columns=columns, existing_data=existing_batch)
+
+        system_prompt = _create_system_prompt(data_format)
+        user_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
             columns=columns,
@@ -595,18 +637,20 @@ def _create_table_rows_generator(
             context_data=context_batch,
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
-            response_format=response_format,
+            data_format=data_format,
         )
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": llm_prompt}]
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
         n_existing_columns = len(existing_batch.columns) if existing_batch is not None else 0
         n_columns_to_generate = len(columns) - n_existing_columns
         if n_columns_to_generate > 0:
-            response = completion_with_retries(messages=messages, **litellm_kwargs)
+            response = completion_with_retries(
+                messages=messages, response_format=structured_output_schema, **litellm_kwargs
+            )
             yield_rows_from_chunks_stream = {
-                "JSON": yield_rows_from_json_chunks_stream,
-                "CSV": yield_rows_from_csv_chunks_stream,
-            }[response_format]
+                DataFormat.JSON: yield_rows_from_json_chunks_stream,
+                DataFormat.CSV: yield_rows_from_csv_chunks_stream,
+            }[data_format]
             rows_stream = yield_rows_from_chunks_stream(response)
         else:
             # skip roundtrip to LLM in case all columns are provided in existing data
