@@ -21,7 +21,7 @@ from fastmcp import FastMCP
 from mostlyai import mock
 
 SAMPLE_MOCK_TOOL_DESCRIPTION = f"""
-Generate mock data by prompting an LLM.
+Generate tabular data as you see fit.
 
 This tool is a proxy to the `mostlyai.mock.sample` function, but returns a dictionary of paths to the generated CSV files.
 
