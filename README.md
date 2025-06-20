@@ -1,16 +1,17 @@
-# LLM-generated Mock Data 🔮
+# Synthetic Data as You See Fit 🔮
 
 [![Documentation](https://img.shields.io/badge/docs-latest-green)](https://mostly-ai.github.io/mostlyai-mock/) [![stats](https://pepy.tech/badge/mostlyai-mock)](https://pypi.org/project/mostlyai-mock/) ![license](https://img.shields.io/github/license/mostly-ai/mostlyai-mock) ![GitHub Release](https://img.shields.io/github/v/release/mostly-ai/mostlyai-mock)
 
-Create data out of nothing. Prompt LLMs for Tabular Data.
+Use LLMs to generate any Tabular Data towards your needs. Create from scratch, expand existing datasets, or enrich tables with new columns. Your prompts, your rules, your data.
 
 ## Key Features
 
-* A light-weight python client for prompting LLMs for mixed-type tabular data
-* Select from a range of LLM endpoints, that provide structured output
+* A light-weight python client for prompting LLMs for mixed-type tabular data.
+* Select from a wide range of LLM endpoints and LLM models.
 * Supports single-table as well as multi-table scenarios.
 * Supports variety of data types: `string`, `categorical`, `integer`, `float`, `boolean`, `date`, and `datetime`.
 * Specify context, distributions and rules via dataset-, table- or column-level prompts.
+* Create from scratch or enrich existing datasets with new columns and/or rows.
 * Tailor the diversity and realism of your generated data via temperature and top_p.
 
 ## Getting Started
