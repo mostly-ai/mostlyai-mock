@@ -527,7 +527,7 @@ def _create_table_rows_generator(
         n_attempts = 3
 
         def print_on_retry(_):
-            print(" * Trying again... * ", end="", flush=True)
+            print(" * Calling LLM again... * ", end="", flush=True)
 
         # try up to 3 times, print a message to the user on each retry
         retryer = tenacity.Retrying(
