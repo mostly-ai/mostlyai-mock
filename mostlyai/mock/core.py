@@ -413,6 +413,10 @@ def _create_table_prompt(
 
     if existing_data is not None:
         prompt += f" Only include the following columns in the {llm_output_format.value} string: {list(columns.keys() - existing_data.columns)}."
+
+    if llm_output_format == LLMOutputFormat.CSV:
+        prompt += " Additionally, add column called `_ROW_IDX` that is a counter from 1 to the number of rows generated so far within current batch."
+
     prompt += "\n"
     return prompt
 
@@ -537,14 +541,13 @@ def _create_table_rows_generator(
         )
         return retryer(litellm.completion, *args, **kwargs)
 
-    batch_size = 30  # generate 30 root table rows at a time
+    batch_size = 30  # generate / augment 30 root table rows at a time
 
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
     if name in data:
         existing_data = data[name]
         sample_size = len(existing_data)
-        batch_size = 10  # augment 10 root table rows at a time
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -668,22 +671,47 @@ def _create_table_rows_generator(
             rows_stream = itertools.repeat({})
 
         rows = []
-        for row_idx, row_generated_part in enumerate(rows_stream):  # iterate over rows in current batch
-            row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
-            row = {**row_generated_part, **row_existing_part}
-            if set(row.keys()) != set(columns.keys()):
-                # mismatch of columns in a row suggests that entire batch is malformed; repeat the same batch in the next iteration
-                print(" * Malformed row, repeating batch... * ", end="", flush=True)
-                do_repeat_previous_batch = True
+        row_idx = 0
+        while True:  # iterate over rows in current batch
+            rows_generated_part = []
+            if existing_batch is not None:
+                # in case of data enrichment, we need to generate all rows in the batch first,
+                # in order to check that all rows were completed
+                rows_generated_part = list(rows_stream)
+                print(rows_generated_part)
+                if len(rows_generated_part) != len(existing_batch):
+                    print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
+                    do_repeat_previous_batch = True
+                    break
+            else:
+                # in case of data generation, rows are independent, so we can yield them one by one
+                try:
+                    row_generated_part = next(rows_stream)
+                except StopIteration:
+                    break
+            for row_generated_part in rows_generated_part:
+                if "_ROW_IDX" in row_generated_part:
+                    # remove internal counter column
+                    del row_generated_part["_ROW_IDX"]
+                row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
+                row = {**row_generated_part, **row_existing_part}
+                if set(row.keys()) != set(columns.keys()):
+                    # mismatch of columns in a row suggests that entire batch is malformed; repeat the same batch in the next iteration
+                    print(" * Malformed row, repeating batch... * ", end="", flush=True)
+                    do_repeat_previous_batch = True
+                    break
+                row = {column: row[column] for column in columns.keys()}  # keep columns order according to user's spec
+                yield row
+                if context_batch is None:
+                    # each subject row is considered a single sequence
+                    yielded_sequences += 1
+                    if yielded_sequences >= sample_size:
+                        return  # move to next table
+                rows.append(row)
+                row_idx += 1
+            if existing_batch is not None:
+                # in case of data enrichment, all rows are yielded already during the first iteration
                 break
-            row = {column: row[column] for column in columns.keys()}  # keep columns order according to user's spec
-            yield row
-            if context_batch is None:
-                # each subject row is considered a single sequence
-                yielded_sequences += 1
-                if yielded_sequences >= sample_size:
-                    return  # move to next table
-            rows.append(row)
 
         if do_repeat_previous_batch:
             continue
