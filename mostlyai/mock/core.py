@@ -233,7 +233,7 @@ Your task is to:
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
 6. When enriching existing data, ensure that new values are consistent with existing values
-7. Return well-formatted {llm_output_format} output that can be directly parsed
+7. Return well-formatted {llm_output_format.value} output that can be directly parsed
 8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
@@ -360,7 +360,7 @@ def _create_table_prompt(
 
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
-        prompt += f"Number of rows to {verb}: `{n_rows}`.\n\n"
+        prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
     if has_context_table_section:
         assert foreign_keys
@@ -402,7 +402,7 @@ def _create_table_prompt(
 
     prompt += f"Do not use code to {verb} the data.\n\n"
 
-    prompt += f"Return data as a {llm_output_format} string."
+    prompt += f"Return data as a {llm_output_format.value} string."
     if llm_output_format == LLMOutputFormat.JSON:
         prompt += " The JSON string should have 'rows' key at the top level."
         prompt += " The value of 'rows' key should be a list of JSON objects."
@@ -414,7 +414,7 @@ def _create_table_prompt(
         prompt += " Each value in the CSV string should be enclosed in double quotes."
 
     if existing_data is not None:
-        prompt += f" Only include the following columns in the {llm_output_format} string: {list(columns.keys() - existing_data.columns)}."
+        prompt += f" Only include the following columns in the {llm_output_format.value} string: {list(columns.keys() - existing_data.columns)}."
     prompt += "\n"
     return prompt
 
@@ -497,6 +497,7 @@ def _create_table_rows_generator(
 
     def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         buffer = ""
+        tmp_buffer = ""
         header = None
         for chunk in response:
             delta = chunk.choices[0].delta.content
@@ -504,6 +505,7 @@ def _create_table_rows_generator(
                 continue
             for char in delta:
                 buffer += char
+                tmp_buffer += char
                 if char == "\n":
                     row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
                     if header is None:
@@ -515,6 +517,11 @@ def _create_table_rows_generator(
                         #                        ** <- end of data row
                         yield dict(zip(header, row))
                     buffer = ""
+        if buffer:
+            # last row might not finish with a newline, in which case the buffer would not be empty here
+            last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+            yield dict(zip(header, last_row))
+        print(tmp_buffer)
 
     def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
         while True:
@@ -579,6 +586,7 @@ def _create_table_rows_generator(
     n_malformed_batches = 0
     llm_output_format = LLMOutputFormat.CSV
     while True:  # iterate over batches
+        print(f"Batch {batch_idx}")
         # pick next context batch or repeat the previous one
         context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
         n_malformed_batches += int(do_repeat_previous_batch)
@@ -666,7 +674,7 @@ def _create_table_rows_generator(
         rows = []
         for row_idx, row_generated_part in enumerate(rows_stream):  # iterate over rows in current batch
             row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
-            row = {**row_existing_part, **row_generated_part}
+            row = {**row_generated_part, **row_existing_part}
             if set(row.keys()) != set(columns.keys()):
                 # mismatch of columns in a row suggests that entire batch is malformed; repeat the same batch in the next iteration
                 print(" * Malformed row, repeating batch... * ", end="", flush=True)
