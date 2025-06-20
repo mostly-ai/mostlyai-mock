@@ -19,6 +19,7 @@ import json
 from collections import deque
 from collections.abc import Generator
 from enum import Enum
+from io import StringIO
 from typing import Any, Literal
 
 import litellm
@@ -29,27 +30,10 @@ from tqdm import tqdm
 
 litellm.suppress_debug_info = True
 
-SYSTEM_PROMPT = """
-You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
-Your task is to:
-
-1. Generate data that strictly adheres to the provided schema constraints (data types, ranges, formats)
-2. Ensure logical consistency across related tables and foreign key relationships
-3. Create contextually appropriate values that reflect real-world patterns and distributions
-4. Produce diverse, non-repetitive data that avoids obvious patterns
-5. Respect uniqueness constraints and other data integrity rules
-6. When enriching existing data, ensure that new values are consistent with existing values
-7. Return well-formatted JSON output that can be directly parsed
-8. Don't use markdown formatting
-
-For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
-appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
-across tables.
-
-When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
-to generate compatible and realistic values for the missing columns.
-"""
+class LLMOutputFormat(str, Enum):
+    JSON = "JSON"
+    CSV = "CSV"
 
 
 class LLMConfig(BaseModel):
@@ -163,6 +147,12 @@ class ColumnConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def override_values_for_boolean_dtype(self) -> ColumnConfig:
+        if self.dtype == DType.BOOLEAN:
+            self.values = [True, False]
+        return self
+
+    @model_validator(mode="after")
     def harmonize_values_with_dtypes(self) -> ColumnConfig:
         if self.values:
             cast_fn, convertible_to = {
@@ -208,7 +198,6 @@ def _sample_table(
     primary_keys: dict[str, str] | None,
     data: dict[str, pd.DataFrame],
     sample_size: int,
-    batch_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
@@ -221,7 +210,6 @@ def _sample_table(
         foreign_keys=foreign_keys,
         data=data,
         sample_size=sample_size,
-        batch_size=batch_size,
         previous_rows_size=previous_rows_size,
         non_context_size=non_context_size,
         llm_config=llm_config,
@@ -229,6 +217,30 @@ def _sample_table(
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
+
+
+def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
+    return f"""
+You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
+
+Your task is to:
+
+1. Generate data that strictly adheres to the provided schema constraints (data types, ranges, formats)
+2. Ensure logical consistency across related tables and foreign key relationships
+3. Create contextually appropriate values that reflect real-world patterns and distributions
+4. Produce diverse, non-repetitive data that avoids obvious patterns
+5. Respect uniqueness constraints and other data integrity rules
+6. When enriching existing data, ensure that new values are consistent with existing values
+7. Return well-formatted {llm_output_format.value} output that can be directly parsed
+8. Don't use markdown formatting
+
+For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
+appropriate content. For dates and timestamps, ensure logical chronology. Always maintain referential integrity \
+across tables.
+
+When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
+to generate compatible and realistic values for the missing columns.
+"""
 
 
 def _create_table_prompt(
@@ -243,6 +255,7 @@ def _create_table_prompt(
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
     previous_rows: list[dict] | None,
+    llm_output_format: LLMOutputFormat,
 ) -> str:
     # add table prompt
     prompt = f"# {prompt}\n\n"
@@ -345,7 +358,7 @@ def _create_table_prompt(
 
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
-        prompt += f"Number of rows to {verb}: `{n_rows}`.\n\n"
+        prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
     if has_context_table_section:
         assert foreign_keys
@@ -387,13 +400,23 @@ def _create_table_prompt(
 
     prompt += f"Do not use code to {verb} the data.\n\n"
 
-    prompt += "Return data as a JSON string."
-    prompt += " The JSON string should have 'rows' key at the top level. The value of 'rows' key should be a list of JSON objects."
-    prompt += " Each JSON object should have column names as keys and values as column values."
+    prompt += f"Return data as a {llm_output_format.value} string."
+    if llm_output_format == LLMOutputFormat.JSON:
+        prompt += " The JSON string should have 'rows' key at the top level."
+        prompt += " The value of 'rows' key should be a list of JSON objects."
+        prompt += " Each JSON object should have column names as keys and values as column values."
+    else:  # llm_output_format == LLMOutputFormat.CSV
+        prompt += " The CSV string should have a header row with column names."
+        prompt += " The CSV string should have a data row for each row to be generated."
+        prompt += " The CSV string should have a newline character at the end of each row."
+        prompt += " Each value in the CSV string should be enclosed in double quotes."
+
     if existing_data is not None:
-        prompt += (
-            f" Only include the following columns in the JSON string: {list(columns.keys() - existing_data.columns)}."
-        )
+        prompt += f" Only include the following columns in the {llm_output_format.value} string: {list(columns.keys() - existing_data.columns)}."
+
+    if llm_output_format == LLMOutputFormat.CSV:
+        prompt += " Additionally, add column called `_ROW_IDX` that is a counter from 1 to the number of rows generated so far within current batch."
+
     prompt += "\n"
     return prompt
 
@@ -407,14 +430,17 @@ def _create_table_rows_generator(
     primary_keys: dict[str, str] | None,
     data: dict[str, pd.DataFrame],
     sample_size: int,
-    batch_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
-    def create_table_response_format(
+    def supports_structured_outputs(model: str) -> bool:
+        supported_params = litellm.get_supported_openai_params(model=model) or []
+        return "response_format" in supported_params and litellm.supports_response_schema(model)
+
+    def create_structured_output_schema(
         columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
-    ) -> tuple[type[BaseModel], int]:
+    ) -> type[BaseModel]:
         def create_annotation(column_config: ColumnConfig) -> type:
             if column_config.values or column_config.dtype is DType.CATEGORY:
                 return Literal[tuple(column_config.values)]
@@ -437,8 +463,7 @@ def _create_table_rows_generator(
             fields[column_name] = (annotation, Field(...))
         TableRow = create_model("TableRow", **fields)
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
-        n_enforced_columns = len(fields)
-        return TableRows, n_enforced_columns
+        return TableRows
 
     def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
@@ -471,7 +496,32 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
-    def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
+    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
+        buffer = ""
+        header = None
+        for chunk in response:
+            delta = chunk.choices[0].delta.content
+            if delta is None:
+                continue
+            for char in delta:
+                buffer += char
+                if char == "\n":
+                    row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+                    if header is None:
+                        # column1,column2,column3\n
+                        #                        ** <- end of header row
+                        header = row
+                    else:
+                        # value_1,value_2,value_3\n
+                        #                        ** <- end of data row
+                        yield dict(zip(header, row))
+                    buffer = ""
+        if buffer:
+            # last row might not finish with a newline, in which case the buffer would not be empty here
+            last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+            yield dict(zip(header, last_row))
+
+    def batch_infinitely(data: pd.DataFrame | None, batch_size: int) -> Generator[pd.DataFrame | None]:
         while True:
             if data is None:
                 yield None
@@ -483,7 +533,7 @@ def _create_table_rows_generator(
         n_attempts = 3
 
         def print_on_retry(_):
-            print(" * Trying again... * ", end="", flush=True)
+            print(" * Calling LLM again... * ", end="", flush=True)
 
         # try up to 3 times, print a message to the user on each retry
         retryer = tenacity.Retrying(
@@ -491,18 +541,14 @@ def _create_table_rows_generator(
         )
         return retryer(litellm.completion, *args, **kwargs)
 
-    if not llm_config.model.startswith("litellm_proxy/"):
-        # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
-        supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
-        assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
-            "The model does not support structured output / JSON mode."
-        )
+    batch_size = 30  # generate 30 root table rows at a time
 
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
     if name in data:
         existing_data = data[name]
         sample_size = len(existing_data)
+        batch_size = 10  # augment 10 root table rows at a time
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -510,7 +556,7 @@ def _create_table_rows_generator(
         context_table_name = foreign_keys[0].referenced_table
         assert context_table_name in data
         context_data = data[context_table_name]
-        batch_size = 1  # generate one sequence at a time
+        batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
@@ -535,7 +581,32 @@ def _create_table_rows_generator(
     batch_idx = 0
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
-    for context_batch in batch_infinitely(context_data):
+    context_batch_generator = batch_infinitely(context_data, batch_size)
+    context_batch = None
+    do_repeat_previous_batch = False
+    n_malformed_batches = 0
+    llm_output_format = LLMOutputFormat.CSV
+    while True:  # iterate over batches
+        # pick next context batch or repeat the previous one
+        context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
+        n_malformed_batches += int(do_repeat_previous_batch)
+        do_repeat_previous_batch = False
+
+        # fallback to JSON with Structured Outputs if CSV generation fails too often
+        if (
+            llm_output_format == LLMOutputFormat.CSV
+            and supports_structured_outputs(model=llm_config.model)
+            and n_malformed_batches >= 3
+        ):
+            print(" * Falling back to JSON with Structured Outputs... * ", end="", flush=True)
+            llm_output_format = LLMOutputFormat.JSON
+
+        # raise error if generation is not stable
+        if n_malformed_batches >= 10:
+            raise RuntimeError(
+                "Too many malformed batches were generated. Consider changing the model in order to make generation more stable."
+            )
+
         # pick existing rows for current batch
         existing_batch: pd.DataFrame | None = None
         if existing_data is not None:
@@ -552,6 +623,11 @@ def _create_table_rows_generator(
             if existing_batch.empty:
                 existing_batch = None
 
+        # resolve columns to generate
+        generated_columns = set(columns.keys())
+        if existing_batch is not None:
+            generated_columns = generated_columns - set(existing_batch.columns)
+
         # sample candidate rows from non-context tables for current batch
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
@@ -565,11 +641,12 @@ def _create_table_rows_generator(
             if batch_size >= remaining_rows:
                 batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
 
-        response_format, n_enforced_columns = create_table_response_format(
-            columns=columns, existing_data=existing_batch
-        )
+        structured_output_schema = None
+        if llm_output_format == LLMOutputFormat.JSON:
+            structured_output_schema = create_structured_output_schema(columns=columns, existing_data=existing_batch)
 
-        llm_prompt = _create_table_prompt(
+        system_prompt = _create_system_prompt(llm_output_format)
+        user_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
             columns=columns,
@@ -580,33 +657,74 @@ def _create_table_rows_generator(
             context_data=context_batch,
             non_context_data=non_context_batch,
             previous_rows=list(previous_rows),
+            llm_output_format=llm_output_format,
         )
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
-        if n_enforced_columns != 0:
-            response = completion_with_retries(messages=messages, response_format=response_format, **litellm_kwargs)
-            rows_stream = yield_rows_from_json_chunks_stream(response)
+        if len(generated_columns) > 0:
+            response = completion_with_retries(
+                messages=messages, response_format=structured_output_schema, **litellm_kwargs
+            )
+            yield_rows_from_chunks_stream = {
+                LLMOutputFormat.JSON: yield_rows_from_json_chunks_stream,
+                LLMOutputFormat.CSV: yield_rows_from_csv_chunks_stream,
+            }[llm_output_format]
+            rows_stream = yield_rows_from_chunks_stream(response)
         else:
             # skip roundtrip to LLM in case all columns are provided in existing data
             rows_stream = itertools.repeat({})
 
-        batch_row_idx = 0
-        while True:
-            try:
-                row_generated_part = next(rows_stream)
-                row_existing_part = existing_batch.iloc[batch_row_idx].to_dict() if existing_batch is not None else {}
-                row = {**row_existing_part, **row_generated_part}
+        yielded_rows = []
+        while True:  # iterate over rows in current batch
+            rows_generated_part = []
+            if existing_batch is not None:
+                # in case of data enrichment, we need to generate all rows in the batch first,
+                # in order to check that all rows were completed
+                rows_generated_part = list(rows_stream)
+                print(rows_generated_part)
+                if len(rows_generated_part) != len(existing_batch):
+                    print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
+                    do_repeat_previous_batch = True
+                    break
+            else:
+                # in case of data generation, rows are independent, so we can yield them one by one
+                try:
+                    row_generated_part = next(rows_stream)
+                except StopIteration:
+                    break
+
+            rows = []
+            for row_idx, row_generated_part in enumerate(rows_generated_part):
+                # remove internal columns, if exist
+                row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
+                row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
+                row = {**row_generated_part, **row_existing_part}
+                if set(row.keys()) != set(columns.keys()):
+                    # mismatch of columns in a row suggests that entire batch is malformed; repeat the same batch in the next iteration
+                    print(" * Malformed row, repeating batch... * ", end="", flush=True)
+                    do_repeat_previous_batch = True
+                    break
                 row = {column: row[column] for column in columns.keys()}  # keep columns order according to user's spec
-            except StopIteration:
-                break  # move to next batch
-            previous_rows.append(row)
-            yield row
-            if context_batch is None:
-                # each subject row is considered a single sequence
-                yielded_sequences += 1
-                if yielded_sequences >= sample_size:
-                    return  # move to next table
-            batch_row_idx += 1
+                rows.append(row)
+
+            for row in rows:
+                yield row
+                if context_batch is None:
+                    # each subject row is considered a single sequence
+                    yielded_sequences += 1
+                    if yielded_sequences >= sample_size:
+                        return  # move to next table
+                yielded_rows.append(row)
+
+            if existing_batch is not None:
+                # in case of data enrichment, all rows are yielded already during the first iteration
+                break
+
+        if do_repeat_previous_batch:
+            continue
+
+        previous_rows.extend(yielded_rows)
+
         if context_batch is not None:
             # for each context_batch, full sequences are generated
             yielded_sequences += len(context_batch)
@@ -631,6 +749,8 @@ def _convert_table_rows_generator_to_df(
             elif column_config.dtype is DType.FLOAT:
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("double[pyarrow]")
             elif column_config.dtype is DType.BOOLEAN:
+                df[column_name] = df[column_name].map(lambda x: True if str(x).lower() == "true" else x)
+                df[column_name] = df[column_name].map(lambda x: False if str(x).lower() == "false" else x)
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("boolean[pyarrow]")
             elif column_config.dtype is DType.CATEGORY:
                 df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
@@ -765,7 +885,7 @@ def sample(
             If a table has a foreign key, the sample size is determined by the corresponding foreign key prompt. If nothing specified, a few rows per parent record are generated.
         existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
             Default is None.
-        model (str): The LiteLLM chat completion model to be used. Model needs to support structured output / JSON mode.
+        model (str): The LiteLLM chat completion model to be used.
             Examples include:
             - `openai/gpt-4.1-nano` (default; fast, and smart)
             - `openai/gpt-4.1-mini` (slower, but smarter)
@@ -981,7 +1101,6 @@ def sample(
             primary_keys=primary_keys,
             data=data,
             sample_size=sample_size[table_name],
-            batch_size=20,  # generate 20 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             llm_config=llm_config,
