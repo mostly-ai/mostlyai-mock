@@ -1,7 +1,7 @@
 [project]
 name = "mostlyai-mock"
 version = "0.1.7"
-description = "LLM-generated Mock Data"
+description = "Synthetic Data from Scratch"
 authors = [{ name = "MOSTLY AI", email = "dev@mostly.ai" }]
 requires-python = ">=3.10"
 readme = "README.md"

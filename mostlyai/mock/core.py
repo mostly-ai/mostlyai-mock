@@ -30,7 +30,7 @@ from tqdm import tqdm
 litellm.suppress_debug_info = True
 
 SYSTEM_PROMPT = """
-You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
+You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
 Your task is to:
 
@@ -746,7 +746,7 @@ def sample(
     return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
-    Generate mock data from scratch or enrich existing data by prompting an LLM.
+    Generate synthetic data from scratch or enrich existing data with new columns.
 
     While faker and numpy are useful to create fake data, this utility is unique as it allows
     the creation of coherent, realistic multi-table tabular mock data
