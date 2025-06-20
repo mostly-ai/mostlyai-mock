@@ -494,7 +494,6 @@ def _create_table_rows_generator(
 
     def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         buffer = ""
-        tmp_buffer = ""
         header = None
         for chunk in response:
             delta = chunk.choices[0].delta.content
@@ -502,7 +501,6 @@ def _create_table_rows_generator(
                 continue
             for char in delta:
                 buffer += char
-                tmp_buffer += char
                 if char == "\n":
                     row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
                     if header is None:
@@ -518,7 +516,6 @@ def _create_table_rows_generator(
             # last row might not finish with a newline, in which case the buffer would not be empty here
             last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
             yield dict(zip(header, last_row))
-        print(tmp_buffer)
 
     def batch_infinitely(data: pd.DataFrame | None, batch_size: int) -> Generator[pd.DataFrame | None]:
         while True:
@@ -586,7 +583,6 @@ def _create_table_rows_generator(
     n_malformed_batches = 0
     llm_output_format = LLMOutputFormat.CSV
     while True:  # iterate over batches
-        print(f"Batch {batch_idx}")
         # pick next context batch or repeat the previous one
         context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
         n_malformed_batches += int(do_repeat_previous_batch)
