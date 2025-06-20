@@ -23,8 +23,6 @@ from mostlyai import mock
 SAMPLE_MOCK_TOOL_DESCRIPTION = f"""
 Generate tabular data as you see fit.
 
-Use LLMs to generate any Tabular Data towards your needs. Create from scratch, expand existing datasets, or enrich tables with new columns.
-
 This tool is a proxy to the `mostlyai.mock.sample` function, but returns a dictionary of paths to the generated CSV files.
 
 Present the result nicely to the user, in Markdown format. Example:
