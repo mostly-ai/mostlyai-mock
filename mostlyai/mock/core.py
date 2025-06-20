@@ -1055,7 +1055,7 @@ def sample(
             primary_keys=primary_keys,
             data=data,
             sample_size=sample_size[table_name],
-            batch_size=30,  # generate 20 root table rows at a time
+            batch_size=30,  # generate 30 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             llm_config=llm_config,
