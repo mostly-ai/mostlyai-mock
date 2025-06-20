@@ -24,12 +24,14 @@ from typing import Any, Literal
 import litellm
 import pandas as pd
 import tenacity
-from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from tqdm import tqdm
 
 litellm.suppress_debug_info = True
 
-SYSTEM_PROMPT = """
+RESPONSE_FORMAT: Literal["JSON", "CSV"] = "JSON"
+
+SYSTEM_PROMPT = f"""
 You are a specialized mock data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
 Your task is to:
@@ -40,7 +42,7 @@ Your task is to:
 4. Produce diverse, non-repetitive data that avoids obvious patterns
 5. Respect uniqueness constraints and other data integrity rules
 6. When enriching existing data, ensure that new values are consistent with existing values
-7. Return well-formatted JSON output that can be directly parsed
+7. Return well-formatted {RESPONSE_FORMAT} output that can be directly parsed
 8. Don't use markdown formatting
 
 For numeric fields, generate realistic distributions rather than random values. For text fields, create contextually \
@@ -160,6 +162,12 @@ class ColumnConfig(BaseModel):
     def ensure_values_are_provided_for_category_dtype(self) -> ColumnConfig:
         if self.dtype == DType.CATEGORY and not self.values:
             raise ValueError("At least one value must be provided when dtype is 'category'")
+        return self
+
+    @model_validator(mode="after")
+    def override_values_for_boolean_dtype(self) -> ColumnConfig:
+        if self.dtype == DType.BOOLEAN:
+            self.values = [True, False]
         return self
 
     @model_validator(mode="after")
@@ -387,13 +395,18 @@ def _create_table_prompt(
 
     prompt += f"Do not use code to {verb} the data.\n\n"
 
-    prompt += "Return data as a JSON string."
-    prompt += " The JSON string should have 'rows' key at the top level. The value of 'rows' key should be a list of JSON objects."
-    prompt += " Each JSON object should have column names as keys and values as column values."
+    prompt += f"Return data as a {RESPONSE_FORMAT} string."
+    if RESPONSE_FORMAT == "JSON":
+        prompt += " The JSON string should have 'rows' key at the top level."
+        prompt += " The value of 'rows' key should be a list of JSON objects."
+        prompt += " Each JSON object should have column names as keys and values as column values."
+    else:  # RESPONSE_FORMAT == "CSV"
+        prompt += " The CSV string should have a header row with column names."
+        prompt += " The CSV string should have a data row for each row to be generated."
+        prompt += " The CSV string should have a newline character at the end of each row."
+
     if existing_data is not None:
-        prompt += (
-            f" Only include the following columns in the JSON string: {list(columns.keys() - existing_data.columns)}."
-        )
+        prompt += f" Only include the following columns in the {RESPONSE_FORMAT} string: {list(columns.keys() - existing_data.columns)}."
     prompt += "\n"
     return prompt
 
@@ -412,34 +425,6 @@ def _create_table_rows_generator(
     non_context_size: int | None,
     llm_config: LLMConfig,
 ) -> Generator[dict]:
-    def create_table_response_format(
-        columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
-    ) -> tuple[type[BaseModel], int]:
-        def create_annotation(column_config: ColumnConfig) -> type:
-            if column_config.values or column_config.dtype is DType.CATEGORY:
-                return Literal[tuple(column_config.values)]
-            return {
-                DType.INTEGER: int | None,
-                DType.FLOAT: float | None,
-                DType.STRING: str | None,
-                DType.BOOLEAN: bool | None,
-                # response_format has limited support for JSON Schema features
-                # thus we represent dates and datetimes as strings
-                DType.DATE: str | None,
-                DType.DATETIME: str | None,
-            }[column_config.dtype]
-
-        fields = {}
-        for column_name, column_config in columns.items():
-            if existing_data is not None and column_name in existing_data.columns:
-                continue  # skip columns that already exist in existing data
-            annotation = create_annotation(column_config)
-            fields[column_name] = (annotation, Field(...))
-        TableRow = create_model("TableRow", **fields)
-        TableRows = create_model("TableRows", rows=(list[TableRow], ...))
-        n_enforced_columns = len(fields)
-        return TableRows, n_enforced_columns
-
     def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
@@ -471,6 +456,28 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
+    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
+        buffer = ""
+        header = None
+        for chunk in response:
+            delta = chunk.choices[0].delta.content
+            if delta is None:
+                continue
+            for char in delta:
+                buffer += char
+                if char == "\n":
+                    if header is None:
+                        # column1,column2,column3\n
+                        #                        ** <- end of header row
+                        header = buffer[:-1].split(",")
+                        buffer = ""
+                    else:
+                        # value_1,value_2,value_3\n
+                        #                        ** <- end of data row
+                        row = buffer[:-1].split(",")
+                        yield {header[i]: row[i] for i in range(len(header))}
+                        buffer = ""
+
     def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
         while True:
             if data is None:
@@ -490,13 +497,6 @@ def _create_table_rows_generator(
             stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
         )
         return retryer(litellm.completion, *args, **kwargs)
-
-    if not llm_config.model.startswith("litellm_proxy/"):
-        # ensure model supports response_format and json schema (this check does not work with litellm_proxy)
-        supported_params = litellm.get_supported_openai_params(model=llm_config.model) or []
-        assert "response_format" in supported_params and litellm.supports_response_schema(llm_config.model), (
-            "The model does not support structured output / JSON mode."
-        )
 
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
@@ -535,6 +535,7 @@ def _create_table_rows_generator(
     batch_idx = 0
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
+    # TODO: introduce mechanism to repeat the same context batch, if there are issues
     for context_batch in batch_infinitely(context_data):
         # pick existing rows for current batch
         existing_batch: pd.DataFrame | None = None
@@ -565,10 +566,6 @@ def _create_table_rows_generator(
             if batch_size >= remaining_rows:
                 batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
 
-        response_format, n_enforced_columns = create_table_response_format(
-            columns=columns, existing_data=existing_batch
-        )
-
         llm_prompt = _create_table_prompt(
             name=name,
             prompt=prompt,
@@ -583,9 +580,15 @@ def _create_table_rows_generator(
         )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_prompt}]
 
-        if n_enforced_columns != 0:
-            response = completion_with_retries(messages=messages, response_format=response_format, **litellm_kwargs)
-            rows_stream = yield_rows_from_json_chunks_stream(response)
+        n_existing_columns = len(existing_batch.columns) if existing_batch is not None else 0
+        n_columns_to_generate = len(columns) - n_existing_columns
+        if n_columns_to_generate > 0:
+            response = completion_with_retries(messages=messages, **litellm_kwargs)
+            yield_rows_from_chunks_stream = {
+                "JSON": yield_rows_from_json_chunks_stream,
+                "CSV": yield_rows_from_csv_chunks_stream,
+            }[RESPONSE_FORMAT]
+            rows_stream = yield_rows_from_chunks_stream(response)
         else:
             # skip roundtrip to LLM in case all columns are provided in existing data
             rows_stream = itertools.repeat({})
@@ -631,6 +634,8 @@ def _convert_table_rows_generator_to_df(
             elif column_config.dtype is DType.FLOAT:
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("double[pyarrow]")
             elif column_config.dtype is DType.BOOLEAN:
+                df[column_name] = df[column_name].map(lambda x: True if str(x).lower() == "true" else x)
+                df[column_name] = df[column_name].map(lambda x: False if str(x).lower() == "false" else x)
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("boolean[pyarrow]")
             elif column_config.dtype is DType.CATEGORY:
                 df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
@@ -765,7 +770,7 @@ def sample(
             If a table has a foreign key, the sample size is determined by the corresponding foreign key prompt. If nothing specified, a few rows per parent record are generated.
         existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
             Default is None.
-        model (str): The LiteLLM chat completion model to be used. Model needs to support structured output / JSON mode.
+        model (str): The LiteLLM chat completion model to be used.
             Examples include:
             - `openai/gpt-4.1-nano` (default; fast, and smart)
             - `openai/gpt-4.1-mini` (slower, but smarter)
