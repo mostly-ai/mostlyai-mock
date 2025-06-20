@@ -198,7 +198,6 @@ def _sample_table(
     primary_keys: dict[str, str] | None,
     data: dict[str, pd.DataFrame],
     sample_size: int,
-    batch_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
@@ -211,7 +210,6 @@ def _sample_table(
         foreign_keys=foreign_keys,
         data=data,
         sample_size=sample_size,
-        batch_size=batch_size,
         previous_rows_size=previous_rows_size,
         non_context_size=non_context_size,
         llm_config=llm_config,
@@ -428,7 +426,6 @@ def _create_table_rows_generator(
     primary_keys: dict[str, str] | None,
     data: dict[str, pd.DataFrame],
     sample_size: int,
-    batch_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
@@ -523,7 +520,7 @@ def _create_table_rows_generator(
             yield dict(zip(header, last_row))
         print(tmp_buffer)
 
-    def batch_infinitely(data: pd.DataFrame | None) -> Generator[pd.DataFrame | None]:
+    def batch_infinitely(data: pd.DataFrame | None, batch_size: int) -> Generator[pd.DataFrame | None]:
         while True:
             if data is None:
                 yield None
@@ -543,11 +540,14 @@ def _create_table_rows_generator(
         )
         return retryer(litellm.completion, *args, **kwargs)
 
+    batch_size = 30  # generate 30 root table rows at a time
+
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
     if name in data:
         existing_data = data[name]
         sample_size = len(existing_data)
+        batch_size = 10  # augment 10 root table rows at a time
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -555,7 +555,7 @@ def _create_table_rows_generator(
         context_table_name = foreign_keys[0].referenced_table
         assert context_table_name in data
         context_data = data[context_table_name]
-        batch_size = 1  # generate one sequence at a time
+        batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
 
     # derive non-context data (if more than one foreign key is present)
@@ -580,7 +580,7 @@ def _create_table_rows_generator(
     batch_idx = 0
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
-    context_batch_generator = batch_infinitely(context_data)
+    context_batch_generator = batch_infinitely(context_data, batch_size)
     context_batch = None
     do_repeat_previous_batch = False
     n_malformed_batches = 0
@@ -1070,7 +1070,6 @@ def sample(
             primary_keys=primary_keys,
             data=data,
             sample_size=sample_size[table_name],
-            batch_size=30,  # generate 30 root table rows at a time
             previous_rows_size=10,  # present 10 previously generated rows to the LLM
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             llm_config=llm_config,
