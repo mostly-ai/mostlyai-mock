@@ -537,7 +537,7 @@ async def _worker(
     foreign_keys: list[ForeignKeyConfig],
     primary_keys: dict[str, str],
     previous_rows: deque[dict],
-    task_queue: asyncio.Queue,
+    batch_queue: asyncio.Queue,
     result_queue: asyncio.Queue,
     n_workers: int,
     llm_output_format: LLMOutputFormat,
@@ -546,11 +546,11 @@ async def _worker(
     while True:
         do_repeat_task = False
 
-        # get task from the task_queue
-        task = await task_queue.get()
+        # get task from the batch_queue
+        task = await batch_queue.get()
         if task is None:
             # no more tasks for the worker; break the loop
-            task_queue.task_done()
+            batch_queue.task_done()
             break
 
         # deconstruct task
@@ -632,9 +632,9 @@ async def _worker(
             do_repeat_task = True
 
         if do_repeat_task:
-            # mark current task as done and put it back to the task queue
-            await task_queue.put(task)
-            task_queue.task_done()
+            # mark current task as done and put it back to the batch queue
+            await batch_queue.put(task)
+            batch_queue.task_done()
             continue
 
         # collapse existing and generated parts into coherent rows
@@ -649,11 +649,10 @@ async def _worker(
         # track previous rows for improved data consistency, in case of sequential generation
         if n_workers == 1:
             previous_rows.extend(rows)
-        print(previous_rows)
 
         # put rows to the result queue and mark current task as done
         await result_queue.put(rows)
-        task_queue.task_done()
+        batch_queue.task_done()
 
 
 async def _create_table_rows_generator(
@@ -677,14 +676,16 @@ async def _create_table_rows_generator(
     previous_rows = deque(maxlen=previous_rows_size)
 
     # initialize queues for async communication
-    task_queue = asyncio.Queue()
+    batch_queue = asyncio.Queue()
     result_queue = asyncio.Queue()
 
-    n_total_tasks = math.ceil(sample_size / batch_size)
-    n_workers = min(n_total_tasks, n_workers)
-    for _ in range(n_total_tasks):
-        await task_queue.put({"batch_size": batch_size})
+    # populate batch queue
+    n_total_batches = math.ceil(sample_size / batch_size)
+    n_workers = min(n_total_batches, n_workers)
+    for _ in range(n_total_batches):
+        await batch_queue.put({"batch_size": batch_size})
 
+    # initialize workers
     workers = [
         asyncio.create_task(
             _worker(
@@ -694,7 +695,7 @@ async def _create_table_rows_generator(
                 foreign_keys=foreign_keys,
                 primary_keys=primary_keys,
                 previous_rows=previous_rows,
-                task_queue=task_queue,
+                batch_queue=batch_queue,
                 result_queue=result_queue,
                 n_workers=n_workers,
                 llm_output_format=llm_output_format,
@@ -704,17 +705,23 @@ async def _create_table_rows_generator(
         for _ in range(n_workers)
     ]
 
-    completed_tasks = 0
-    while completed_tasks < n_total_tasks:
+    n_completed_batches = 0
+    n_yielded_sequences = 0
+    while n_completed_batches < n_total_batches and n_yielded_sequences < sample_size:
         rows = await result_queue.get()
         for row in rows:
             yield row
-        completed_tasks += 1
+            # TODO: increment based on context_batch value
+            n_yielded_sequences += 1
+            if n_yielded_sequences >= sample_size:
+                break
+        n_completed_batches += 1
         result_queue.task_done()
 
-    await task_queue.join()
+    # gracefully shutdown workers
+    await batch_queue.join()
     for _ in workers:
-        await task_queue.put(None)
+        await batch_queue.put(None)
     await asyncio.gather(*workers)
 
 
