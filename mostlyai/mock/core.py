@@ -674,7 +674,6 @@ def _create_table_rows_generator(
             # skip roundtrip to LLM in case all columns are provided in existing data
             rows_stream = itertools.repeat({})
 
-        yielded_rows = []
         while True:  # iterate over rows in current batch
             rows_generated_part = []
             if existing_batch is not None:
@@ -690,6 +689,7 @@ def _create_table_rows_generator(
                 # in case of data generation, rows are independent, so we can yield them one by one
                 try:
                     row_generated_part = next(rows_stream)
+                    rows_generated_part.append(row_generated_part)
                 except StopIteration:
                     break
 
@@ -714,7 +714,6 @@ def _create_table_rows_generator(
                     yielded_sequences += 1
                     if yielded_sequences >= sample_size:
                         return  # move to next table
-                yielded_rows.append(row)
 
             if existing_batch is not None:
                 # in case of data enrichment, all rows are yielded already during the first iteration
@@ -723,7 +722,7 @@ def _create_table_rows_generator(
         if do_repeat_previous_batch:
             continue
 
-        previous_rows.extend(yielded_rows)
+        previous_rows.extend(rows)
 
         if context_batch is not None:
             # for each context_batch, full sequences are generated
