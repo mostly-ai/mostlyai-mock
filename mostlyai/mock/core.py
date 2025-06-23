@@ -521,13 +521,10 @@ def _create_table_rows_generator(
             last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
             yield dict(zip(header, last_row))
 
-    def batch_infinitely(data: pd.DataFrame | None, batch_size: int) -> Generator[pd.DataFrame | None]:
+    def batched(data: pd.DataFrame, batch_size: int) -> Generator[pd.DataFrame]:
         while True:
-            if data is None:
-                yield None
-            else:
-                for i in range(0, len(data), batch_size):
-                    yield data.iloc[i : i + batch_size]
+            for i in range(0, len(data), batch_size):
+                yield data.iloc[i : i + batch_size]
 
     def completion_with_retries(*args, **kwargs):
         n_attempts = 3
@@ -581,28 +578,28 @@ def _create_table_rows_generator(
     batch_idx = 0
     yielded_sequences = 0
     previous_rows = deque(maxlen=previous_rows_size)
-    context_batch_generator = batch_infinitely(context_data, batch_size)
+    context_batch_generator = batched(context_data, batch_size) if context_data is not None else itertools.repeat(None)
     context_batch = None
     do_repeat_previous_batch = False
-    n_malformed_batches = 0
-    llm_output_format = LLMOutputFormat.CSV
+    n_retries = 0
+    llm_output_format = LLMOutputFormat.JSON
     while True:  # iterate over batches
         # pick next context batch or repeat the previous one
         context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
-        n_malformed_batches += int(do_repeat_previous_batch)
+        n_retries += int(do_repeat_previous_batch)
         do_repeat_previous_batch = False
 
         # fallback to JSON with Structured Outputs if CSV generation fails too often
         if (
             llm_output_format == LLMOutputFormat.CSV
             and supports_structured_outputs(model=llm_config.model)
-            and n_malformed_batches >= 3
+            and n_retries >= 3
         ):
             print(" * Falling back to JSON with Structured Outputs... * ", end="", flush=True)
             llm_output_format = LLMOutputFormat.JSON
 
         # raise error if generation is not stable
-        if n_malformed_batches >= 10:
+        if n_retries >= 10:
             raise RuntimeError(
                 "Too many malformed batches were generated. Consider changing the model in order to make generation more stable."
             )
