@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import math
 from collections import deque
 from collections.abc import AsyncGenerator, Generator
 from enum import Enum
@@ -195,8 +196,8 @@ async def _sample_table(
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    foreign_keys: list[ForeignKeyConfig] | None,
-    primary_keys: dict[str, str] | None,
+    foreign_keys: list[ForeignKeyConfig],
+    primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
     sample_size: int,
     previous_rows_size: int,
@@ -249,9 +250,9 @@ def _create_table_prompt(
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    primary_keys: dict[str, str] | None,
+    primary_keys: dict[str, str],
     batch_size: int | None,
-    foreign_keys: list[ForeignKeyConfig] | None,
+    foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
@@ -422,13 +423,238 @@ def _create_table_prompt(
     return prompt
 
 
+def _completion_with_retries(*args, **kwargs):
+    n_attempts = 3
+
+    def print_on_retry(_):
+        print(" * Calling LLM again... * ", end="", flush=True)
+
+    # try up to 3 times, print a message to the user on each retry
+    retryer = tenacity.Retrying(stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry)
+    return retryer(litellm.acompletion, *args, **kwargs)
+
+
+async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    # starting with dirty buffer is to handle the `{"rows": []}` case
+    buffer = "garbage"
+    rows_json_started = False
+    in_row_json = False
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta is None:
+            continue
+        for char in delta:
+            buffer += char
+            if char == "{" and not rows_json_started:
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                # *                                 <- start of rows json stream
+                rows_json_started = True
+            elif char == "{" and not in_row_json:
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                #           *                       <- start of single row json stream
+                buffer = "{"
+                in_row_json = True
+            elif char == "}":
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                #                        *     * *  <- any of these
+                try:
+                    row = json.loads(buffer)
+                    yield row
+                    buffer = ""
+                    in_row_json = False
+                except json.JSONDecodeError:
+                    continue
+
+
+async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    buffer = ""
+    header = None
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta is None:
+            continue
+        for char in delta:
+            buffer += char
+            if char == "\n":
+                row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+                if header is None:
+                    # column1,column2,column3\n
+                    #                        ** <- end of header row
+                    header = row
+                else:
+                    # value_1,value_2,value_3\n
+                    #                        ** <- end of data row
+                    yield dict(zip(header, row))
+                buffer = ""
+    if buffer:
+        # last row might not finish with a newline, in which case the buffer would not be empty here
+        last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+        yield dict(zip(header, last_row))
+
+
+def _create_structured_output_schema(
+    columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+) -> type[BaseModel]:
+    def create_annotation(column_config: ColumnConfig) -> type:
+        if column_config.values or column_config.dtype is DType.CATEGORY:
+            return Literal[tuple(column_config.values)]
+        return {
+            DType.INTEGER: int | None,
+            DType.FLOAT: float | None,
+            DType.STRING: str | None,
+            DType.BOOLEAN: bool | None,
+            # response_format has limited support for JSON Schema features
+            # thus we represent dates and datetimes as strings
+            DType.DATE: str | None,
+            DType.DATETIME: str | None,
+        }[column_config.dtype]
+
+    fields = {}
+    for column_name, column_config in columns.items():
+        if existing_data is not None and column_name in existing_data.columns:
+            continue  # skip columns that already exist in existing data
+        annotation = create_annotation(column_config)
+        fields[column_name] = (annotation, Field(...))
+    TableRow = create_model("TableRow", **fields)
+    TableRows = create_model("TableRows", rows=(list[TableRow], ...))
+    return TableRows
+
+
+async def _worker(
+    *,
+    name: str,
+    prompt: str,
+    columns: dict[str, ColumnConfig],
+    primary_keys: dict[str, str],
+    task_queue: asyncio.Queue,
+    result_queue: asyncio.Queue,
+    llm_config: LLMConfig,
+    llm_output_format: LLMOutputFormat,
+):
+    while True:
+        # get task from the task_queue
+        task = await task_queue.get()
+        if task is None:
+            # no more tasks for the worker; break the loop
+            task_queue.task_done()
+            break
+
+        # deconstruct task
+        batch_size = task["batch_size"]
+        existing_batch = task.get("existing_batch")
+
+        # resolve columns to generate
+        generated_columns = set(columns.keys())
+        if existing_batch is not None:
+            generated_columns = generated_columns - set(existing_batch.columns)
+
+        # construct schema for Structured Outputs (applies to JSON LLMOutputFormat only)
+        structured_output_schema = None
+        if llm_output_format == LLMOutputFormat.JSON:
+            structured_output_schema = _create_structured_output_schema(columns=columns, existing_data=existing_batch)
+
+        # construct litellm kwargs
+        litellm_kwargs = {
+            "temperature": llm_config.temperature,
+            "top_p": llm_config.top_p,
+            "model": llm_config.model,
+            "api_key": llm_config.api_key,
+            "stream": True,
+        }
+
+        # construct messages
+        system_prompt = _create_system_prompt(llm_output_format)
+        user_prompt = _create_table_prompt(
+            name=name,
+            prompt=prompt,
+            columns=columns,
+            primary_keys=primary_keys,
+            batch_size=batch_size,
+            foreign_keys=[],  # foreign_keys,
+            existing_data=existing_batch,
+            context_data=None,  # context_batch,
+            non_context_data=None,  # non_context_batch,
+            previous_rows=[],  # list(previous_rows),
+            llm_output_format=llm_output_format,
+        )
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+        if len(generated_columns) > 0:
+            # make LLM call
+            response = await _completion_with_retries(
+                messages=messages, response_format=structured_output_schema, **litellm_kwargs
+            )
+            yield_rows_from_chunks_stream = {
+                LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
+                LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
+            }[llm_output_format]
+            rows_stream = yield_rows_from_chunks_stream(response)
+        else:
+            # skip roundtrip to LLM in case all columns are provided in existing data
+            rows_stream = itertools.repeat({})
+
+        # we first generate all rows in the batch, in order to run consistency checks
+        rows_generated_part = []
+        async for row_generated_part in rows_stream:
+            # remove internal columns, if exist
+            # row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
+
+            # if set(row_generated_part.keys()) != generated_columns:
+            #     if context_batch is not None or existing_batch is not None:
+            #         # in case of linked tables and data enrichment, it's critical that all rows have expected columns
+            #         print(" * Malformed row, repeating batch... * ", end="", flush=True)
+            #         do_repeat_previous_batch = True
+            #         break
+            #     else:
+            #         # in case of flat tables generation, each row is independent, therefore we only skip the invalid row
+            #         continue
+            rows_generated_part.append(row_generated_part)
+
+        # in case of data enrichment, check that all rows were completed successfully
+        # if existing_batch is not None and len(rows_generated_part) != len(existing_batch):
+        #     print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
+        #     do_repeat_previous_batch = True
+        #     break
+
+        # collapse existing and generated parts into coherent rows
+        rows = rows_generated_part
+        # rows = []
+        # for row_idx, row_generated_part in enumerate(rows_generated_part):
+        #     row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
+        #     row = {**row_generated_part, **row_existing_part}
+        #     # keep columns order according to user's spec
+        #     row = {column: row[column] for column in columns.keys()}
+        #     rows.append(row)
+
+        # yield rows one by one only once the whole batch is generated and checked for consistency
+        for row_idx, row in enumerate(rows):
+            pass
+            # yield row
+            # if context_batch is None or row_idx == len(rows) - 1:
+            #     # in case of flat table, each row is considered a single sequence
+            #     # in case of linked table, all rows are considered a single sequence
+            #     # NOTE: this assumes that we generate a single sequence per batch
+            #     yielded_sequences += 1
+            # if yielded_sequences >= sample_size:
+            #     return  # move to next table
+
+        # if do_repeat_previous_batch:
+        #     continue
+
+        # previous_rows.extend(rows)
+        # batch_idx += 1
+
+        await result_queue.put(rows)
+        task_queue.task_done()
+
+
 async def _create_table_rows_generator(
     *,
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    foreign_keys: list[ForeignKeyConfig] | None,
-    primary_keys: dict[str, str] | None,
+    foreign_keys: list[ForeignKeyConfig],
+    primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
     sample_size: int,
     previous_rows_size: int,
@@ -466,78 +692,52 @@ async def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    async def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-        # starting with dirty buffer is to handle the `{"rows": []}` case
-        buffer = "garbage"
-        rows_json_started = False
-        in_row_json = False
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta is None:
-                continue
-            for char in delta:
-                buffer += char
-                if char == "{" and not rows_json_started:
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    # *                                 <- start of rows json stream
-                    rows_json_started = True
-                elif char == "{" and not in_row_json:
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    #           *                       <- start of single row json stream
-                    buffer = "{"
-                    in_row_json = True
-                elif char == "}":
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    #                        *     * *  <- any of these
-                    try:
-                        row = json.loads(buffer)
-                        yield row
-                        buffer = ""
-                        in_row_json = False
-                    except json.JSONDecodeError:
-                        continue
-
-    async def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-        buffer = ""
-        header = None
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta is None:
-                continue
-            for char in delta:
-                buffer += char
-                if char == "\n":
-                    row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
-                    if header is None:
-                        # column1,column2,column3\n
-                        #                        ** <- end of header row
-                        header = row
-                    else:
-                        # value_1,value_2,value_3\n
-                        #                        ** <- end of data row
-                        yield dict(zip(header, row))
-                    buffer = ""
-        if buffer:
-            # last row might not finish with a newline, in which case the buffer would not be empty here
-            last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
-            yield dict(zip(header, last_row))
-
     def batched(data: pd.DataFrame, batch_size: int) -> Generator[pd.DataFrame]:
         while True:
             for i in range(0, len(data), batch_size):
                 yield data.iloc[i : i + batch_size]
 
-    def completion_with_retries(*args, **kwargs):
-        n_attempts = 3
+    batch_size = 10
+    llm_output_format = LLMOutputFormat.CSV
 
-        def print_on_retry(_):
-            print(" * Calling LLM again... * ", end="", flush=True)
+    result_queue = asyncio.Queue()
+    task_queue = asyncio.Queue()
 
-        # try up to 3 times, print a message to the user on each retry
-        retryer = tenacity.Retrying(
-            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
+    n_tasks = math.ceil(sample_size / batch_size)
+    n_workers = min(n_tasks, 2)
+    for _ in range(n_tasks):
+        await task_queue.put({"batch_size": batch_size})
+
+    workers = [
+        asyncio.create_task(
+            _worker(
+                name=name,
+                prompt=prompt,
+                columns=columns,
+                primary_keys=primary_keys,
+                task_queue=task_queue,
+                result_queue=result_queue,
+                llm_config=llm_config,
+                llm_output_format=llm_output_format,
+            )
         )
-        return retryer(litellm.acompletion, *args, **kwargs)
+        for _ in range(n_workers)
+    ]
+
+    completed_tasks = 0
+    while completed_tasks < n_tasks:
+        rows = await result_queue.get()
+        for row in rows:
+            yield row
+        completed_tasks += 1
+        result_queue.task_done()
+
+    await task_queue.join()
+    for _ in workers:
+        await task_queue.put(None)
+    await asyncio.gather(*workers)
+
+    return
 
     batch_size = 30  # generate 30 root table rows at a time
 
@@ -660,12 +860,12 @@ async def _create_table_rows_generator(
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
         if len(generated_columns) > 0:
-            response = await completion_with_retries(
+            response = await _completion_with_retries(
                 messages=messages, response_format=structured_output_schema, **litellm_kwargs
             )
             yield_rows_from_chunks_stream = {
-                LLMOutputFormat.JSON: yield_rows_from_json_chunks_stream,
-                LLMOutputFormat.CSV: yield_rows_from_csv_chunks_stream,
+                LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
+                LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
             }[llm_output_format]
             rows_stream = yield_rows_from_chunks_stream(response)
         else:
