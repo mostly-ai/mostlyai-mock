@@ -414,7 +414,7 @@ def _create_table_prompt(
     if existing_data is not None:
         prompt += f" Only include the following columns in the {llm_output_format.value} string: {list(columns.keys() - existing_data.columns)}."
 
-    if llm_output_format == LLMOutputFormat.CSV:
+    if llm_output_format == LLMOutputFormat.CSV and batch_size > 10:
         prompt += " Additionally, add column called `_ROW_IDX` that is a counter from 1 to the number of rows generated so far within current batch."
 
     prompt += "\n"
