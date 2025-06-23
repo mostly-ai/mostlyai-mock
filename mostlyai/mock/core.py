@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 from collections import deque
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
@@ -26,7 +27,7 @@ import litellm
 import pandas as pd
 import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
-from tqdm import tqdm
+from tqdm.asyncio import tqdm
 
 litellm.suppress_debug_info = True
 
@@ -189,7 +190,7 @@ class ForeignKeyConfig(BaseModel):
     prompt: str | None = None
 
 
-def _sample_table(
+async def _sample_table(
     *,
     name: str,
     prompt: str,
@@ -215,7 +216,7 @@ def _sample_table(
         llm_config=llm_config,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
 
 
@@ -421,7 +422,7 @@ def _create_table_prompt(
     return prompt
 
 
-def _create_table_rows_generator(
+async def _create_table_rows_generator(
     *,
     name: str,
     prompt: str,
@@ -433,7 +434,7 @@ def _create_table_rows_generator(
     previous_rows_size: int,
     non_context_size: int | None,
     llm_config: LLMConfig,
-) -> Generator[dict]:
+) -> AsyncGenerator[dict]:
     def supports_structured_outputs(model: str) -> bool:
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
@@ -465,12 +466,12 @@ def _create_table_rows_generator(
         TableRows = create_model("TableRows", rows=(list[TableRow], ...))
         return TableRows
 
-    def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
+    async def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
         # starting with dirty buffer is to handle the `{"rows": []}` case
         buffer = "garbage"
         rows_json_started = False
         in_row_json = False
-        for chunk in response:
+        async for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta is None:
                 continue
@@ -496,10 +497,10 @@ def _create_table_rows_generator(
                     except json.JSONDecodeError:
                         continue
 
-    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
+    async def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
         buffer = ""
         header = None
-        for chunk in response:
+        async for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta is None:
                 continue
@@ -536,7 +537,7 @@ def _create_table_rows_generator(
         retryer = tenacity.Retrying(
             stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
         )
-        return retryer(litellm.completion, *args, **kwargs)
+        return retryer(litellm.acompletion, *args, **kwargs)
 
     batch_size = 30  # generate 30 root table rows at a time
 
@@ -659,7 +660,7 @@ def _create_table_rows_generator(
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
         if len(generated_columns) > 0:
-            response = completion_with_retries(
+            response = await completion_with_retries(
                 messages=messages, response_format=structured_output_schema, **litellm_kwargs
             )
             yield_rows_from_chunks_stream = {
@@ -673,7 +674,7 @@ def _create_table_rows_generator(
 
         # we first generate all rows in the batch, in order to run consistency checks
         rows_generated_part = []
-        for row_generated_part in rows_stream:
+        async for row_generated_part in rows_stream:
             # remove internal columns, if exist
             row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
 
@@ -721,8 +722,8 @@ def _create_table_rows_generator(
         batch_idx += 1
 
 
-def _convert_table_rows_generator_to_df(
-    table_rows_generator: Generator[dict],
+async def _convert_table_rows_generator_to_df(
+    table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
 ) -> pd.DataFrame:
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
@@ -745,7 +746,7 @@ def _convert_table_rows_generator_to_df(
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
-    df = pd.DataFrame(list(table_rows_generator))
+    df = pd.DataFrame([item async for item in table_rows_generator])
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
@@ -1080,17 +1081,19 @@ def sample(
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
-        df = _sample_table(
-            name=table_name,
-            prompt=table_config.prompt,
-            columns=table_config.columns,
-            foreign_keys=table_config.foreign_keys,
-            primary_keys=primary_keys,
-            data=data,
-            sample_size=sample_size[table_name],
-            previous_rows_size=10,  # present 10 previously generated rows to the LLM
-            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-            llm_config=llm_config,
+        df = asyncio.run(
+            _sample_table(
+                name=table_name,
+                prompt=table_config.prompt,
+                columns=table_config.columns,
+                foreign_keys=table_config.foreign_keys,
+                primary_keys=primary_keys,
+                data=data,
+                sample_size=sample_size[table_name],
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+                llm_config=llm_config,
+            )
         )
         data[table_name] = df
 
