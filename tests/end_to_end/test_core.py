@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from unittest.mock import patch
 
 import litellm
@@ -25,21 +24,11 @@ litellm_completion = litellm.completion
 
 def test_single_table():
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = {
-            "rows": {
-                "guest_id": 1,
-                "nationality": "US",
-                "name": "John Doe",
-                "gender": "male",
-                "age": 25,
-                "date_of_birth": "1990-01-01",
-                "checkin_time": "2025-05-01 10:00:00",
-                "is_vip": True,
-                "price_per_night": 100.0,
-                "room_number": 101,
-            }
-        }
-        return litellm_completion(*args, **kwargs, mock_response=json.dumps(mock_response))
+        mock_response = (
+            "guest_id,nationality,name,gender,age,date_of_birth,checkin_time,is_vip,price_per_night,room_number\n"
+            "1,US,John Doe,male,25,1990-01-01,2025-05-01 10:00:00,True,100.0,101\n"
+        )
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
         "guests": {
