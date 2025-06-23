@@ -743,8 +743,8 @@ async def _create_table_rows_generator(
     while n_completed_batches < n_total_batches and n_yielded_sequences < sample_size:
         rows = await result_queue.get()
         if rows is None:
-            # handle sentinal value None, which is used to signal worker failure
-            raise Exception("Worker failed unexpectedly")
+            # translate sentinal value None, which is used to signal worker failure, to a runtime error
+            raise RuntimeError("Worker failed unexpectedly")
         for row in rows:
             yield row
             # TODO: increment based on context_batch value
