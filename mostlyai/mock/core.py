@@ -582,7 +582,7 @@ def _create_table_rows_generator(
     context_batch = None
     do_repeat_previous_batch = False
     n_retries = 0
-    llm_output_format = LLMOutputFormat.JSON
+    llm_output_format = LLMOutputFormat.CSV
     while True:  # iterate over batches
         # pick next context batch or repeat the previous one
         context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
