@@ -529,6 +529,10 @@ def _supports_structured_outputs(model: str) -> bool:
     return "response_format" in supported_params and litellm.supports_response_schema(model)
 
 
+def _batched(data: pd.DataFrame, batch_size: int) -> list[pd.DataFrame]:
+    return [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
+
+
 async def _worker(
     *,
     name: str,
@@ -543,116 +547,122 @@ async def _worker(
     llm_output_format: LLMOutputFormat,
     llm_config: LLMConfig,
 ):
-    while True:
-        do_repeat_task = False
+    try:
+        while True:
+            do_repeat_task = False
 
-        # get task from the batch_queue
-        task = await batch_queue.get()
-        if task is None:
-            # no more tasks for the worker; break the loop
-            batch_queue.task_done()
-            break
+            # get task from the batch_queue
+            task = await batch_queue.get()
+            if task is None:
+                # no more tasks for the worker; break the loop
+                batch_queue.task_done()
+                break
 
-        # deconstruct task
-        batch_size = task["batch_size"]
-        existing_batch = task.get("existing_batch")
-        context_batch = task.get("context_batch")
-        non_context_batch = task.get("non_context_batch")
+            # deconstruct task
+            batch_size = task["batch_size"]
+            existing_batch = task.get("existing_batch")
+            context_batch = task.get("context_batch")
+            non_context_batch = task.get("non_context_batch")
 
-        # resolve columns to generate
-        generated_columns = set(columns.keys())
-        if existing_batch is not None:
-            generated_columns = generated_columns - set(existing_batch.columns)
+            # resolve columns to generate
+            generated_columns = set(columns.keys())
+            if existing_batch is not None:
+                generated_columns = generated_columns - set(existing_batch.columns)
 
-        # construct schema for Structured Outputs (applies to JSON LLMOutputFormat only)
-        structured_output_schema = None
-        if llm_output_format == LLMOutputFormat.JSON:
-            structured_output_schema = _create_structured_output_schema(columns=columns, existing_data=existing_batch)
+            # construct schema for Structured Outputs (applies to JSON LLMOutputFormat only)
+            structured_output_schema = None
+            if llm_output_format == LLMOutputFormat.JSON:
+                structured_output_schema = _create_structured_output_schema(
+                    columns=columns, existing_data=existing_batch
+                )
 
-        # construct litellm kwargs
-        litellm_kwargs = {
-            "temperature": llm_config.temperature,
-            "top_p": llm_config.top_p,
-            "model": llm_config.model,
-            "api_key": llm_config.api_key,
-            "stream": True,
-        }
+            # construct litellm kwargs
+            litellm_kwargs = {
+                "temperature": llm_config.temperature,
+                "top_p": llm_config.top_p,
+                "model": llm_config.model,
+                "api_key": llm_config.api_key,
+                "stream": True,
+            }
 
-        # construct messages
-        system_prompt = _create_system_prompt(llm_output_format)
-        user_prompt = _create_table_prompt(
-            name=name,
-            prompt=prompt,
-            columns=columns,
-            primary_keys=primary_keys,
-            batch_size=batch_size,
-            foreign_keys=foreign_keys,
-            existing_data=existing_batch,
-            context_data=context_batch,
-            non_context_data=non_context_batch,
-            previous_rows=list(previous_rows),
-            llm_output_format=llm_output_format,
-        )
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-
-        if len(generated_columns) > 0:
-            # make LLM call
-            response = await _completion_with_retries(
-                messages=messages, response_format=structured_output_schema, **litellm_kwargs
+            # construct messages
+            system_prompt = _create_system_prompt(llm_output_format)
+            user_prompt = _create_table_prompt(
+                name=name,
+                prompt=prompt,
+                columns=columns,
+                primary_keys=primary_keys,
+                batch_size=batch_size,
+                foreign_keys=foreign_keys,
+                existing_data=existing_batch,
+                context_data=context_batch,
+                non_context_data=non_context_batch,
+                previous_rows=list(previous_rows),
+                llm_output_format=llm_output_format,
             )
-            yield_rows_from_chunks_stream = {
-                LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
-                LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
-            }[llm_output_format]
-            rows_stream = yield_rows_from_chunks_stream(response)
-        else:
-            # skip roundtrip to LLM in case all columns are provided in existing data
-            rows_stream = itertools.repeat({})
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
-        # we first generate all rows in the batch, in order to run consistency checks
-        rows_generated_part = []
-        async for row_generated_part in rows_stream:
-            # remove internal columns, if exist
-            row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
+            if len(generated_columns) > 0:
+                # make LLM call
+                response = await _completion_with_retries(
+                    messages=messages, response_format=structured_output_schema, **litellm_kwargs
+                )
+                yield_rows_from_chunks_stream = {
+                    LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
+                    LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
+                }[llm_output_format]
+                rows_stream = yield_rows_from_chunks_stream(response)
+            else:
+                # skip roundtrip to LLM in case all columns are provided in existing data
+                rows_stream = itertools.repeat({})
 
-            if set(row_generated_part.keys()) != generated_columns:
-                if context_batch is not None or existing_batch is not None:
-                    # in case of linked tables and data enrichment, it's critical that all rows have expected columns
-                    print(" * Malformed row, repeating batch... * ", end="", flush=True)
-                    do_repeat_task = True
-                    break
-                else:
-                    # in case of flat tables generation, each row is independent, therefore we only skip the invalid row
-                    continue
-            rows_generated_part.append(row_generated_part)
+            # we first generate all rows in the batch, in order to run consistency checks
+            rows_generated_part = []
+            async for row_generated_part in rows_stream:
+                # remove internal columns, if exist
+                row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
 
-        # in case of data enrichment, check that all rows were completed successfully
-        if existing_batch is not None and len(rows_generated_part) != len(existing_batch):
-            print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
-            do_repeat_task = True
+                if set(row_generated_part.keys()) != generated_columns:
+                    if context_batch is not None or existing_batch is not None:
+                        # in case of linked tables and data enrichment, it's critical that all rows have expected columns
+                        print(" * Malformed row, repeating batch... * ", end="", flush=True)
+                        do_repeat_task = True
+                        break
+                    else:
+                        # in case of flat tables generation, each row is independent, therefore we only skip the invalid row
+                        continue
+                rows_generated_part.append(row_generated_part)
 
-        if do_repeat_task:
-            # mark current task as done and put it back to the batch queue
-            await batch_queue.put(task)
+            # in case of data enrichment, check that all rows were completed successfully
+            if existing_batch is not None and len(rows_generated_part) != len(existing_batch):
+                print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
+                do_repeat_task = True
+
+            if do_repeat_task:
+                # mark current task as done and put it back to the front of the batch queue
+                await batch_queue.put(task)
+                batch_queue.task_done()
+                continue
+
+            # collapse existing and generated parts into coherent rows
+            rows = []
+            for row_idx, row_generated_part in enumerate(rows_generated_part):
+                row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
+                row = {**row_generated_part, **row_existing_part}
+                # keep columns order according to user's spec
+                row = {column: row[column] for column in columns.keys()}
+                rows.append(row)
+
+            # track previous rows for improved data consistency, in case of sequential generation
+            if n_workers == 1:
+                previous_rows.extend(rows)
+
+            # put rows to the result queue and mark current task as done
+            await result_queue.put(rows)
             batch_queue.task_done()
-            continue
-
-        # collapse existing and generated parts into coherent rows
-        rows = []
-        for row_idx, row_generated_part in enumerate(rows_generated_part):
-            row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
-            row = {**row_generated_part, **row_existing_part}
-            # keep columns order according to user's spec
-            row = {column: row[column] for column in columns.keys()}
-            rows.append(row)
-
-        # track previous rows for improved data consistency, in case of sequential generation
-        if n_workers == 1:
-            previous_rows.extend(rows)
-
-        # put rows to the result queue and mark current task as done
-        await result_queue.put(rows)
-        batch_queue.task_done()
+    except Exception as e:
+        await result_queue.put(None)
+        raise e
 
 
 async def _create_table_rows_generator(
@@ -675,17 +685,40 @@ async def _create_table_rows_generator(
 
     previous_rows = deque(maxlen=previous_rows_size)
 
+    # derive context data (if first foreign key is present) and harmonize sample size accordingly
+    context_data: pd.DataFrame | None = None
+    context_batches: list[pd.DataFrame] | None = None
+    if foreign_keys and foreign_keys[0].referenced_table != name:  # self-dependency is not considered as context
+        context_table_name = foreign_keys[0].referenced_table
+        assert context_table_name in data
+        context_data = data[context_table_name]
+        batch_size = 1  # generate 1 sequence at a time
+        sample_size = len(context_data)
+        context_batches = _batched(context_data, batch_size)
+
     # initialize queues for async communication
-    batch_queue = asyncio.Queue()
+    batch_queue = asyncio.LifoQueue()
     result_queue = asyncio.Queue()
 
+    # calculate batch_sizes
+    n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
+    batch_sizes = [batch_size] * n_total_batches
+    if context_batches is None:
+        # optimise the last batch size for flat tables
+        # +2 because LLM may not always count the rows correctly
+        batch_sizes[-1] = sample_size - sum(batch_sizes[:-1]) + 2
+
     # populate batch queue
-    n_total_batches = math.ceil(sample_size / batch_size)
-    n_workers = min(n_total_batches, n_workers)
-    for _ in range(n_total_batches):
-        await batch_queue.put({"batch_size": batch_size})
+    for batch_idx in range(n_total_batches):
+        await batch_queue.put(
+            {
+                "batch_size": batch_sizes[batch_idx],
+                "context_batch": context_batches[batch_idx] if context_batches is not None else None,
+            }
+        )
 
     # initialize workers
+    n_workers = min(n_total_batches, n_workers)
     workers = [
         asyncio.create_task(
             _worker(
@@ -709,6 +742,8 @@ async def _create_table_rows_generator(
     n_yielded_sequences = 0
     while n_completed_batches < n_total_batches and n_yielded_sequences < sample_size:
         rows = await result_queue.get()
+        if rows is None:
+            raise Exception("Worker failed unexpectedly")
         for row in rows:
             yield row
             # TODO: increment based on context_batch value
