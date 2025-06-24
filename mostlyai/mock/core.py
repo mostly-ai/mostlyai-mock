@@ -656,6 +656,7 @@ async def _worker(
                 do_repeat_task = True
 
             if do_repeat_task:
+                # allow 10 retries across all workers before propagating the exception to the orchestrator
                 await retry_queue.put(1)
                 if retry_queue.qsize() < 10:
                     # put task back to the front of the batch queue
@@ -663,7 +664,8 @@ async def _worker(
                 else:
                     # inform the orchestrator that max retries were reached
                     raise RuntimeError(
-                        "Too many malformed batches were generated. Consider changing the model in order to make generation more stable."
+                        "Too many malformed batches were generated. "
+                        "Consider changing the model in order to make generation more stable."
                     )
 
                 # mark current task as done
@@ -687,6 +689,7 @@ async def _worker(
             await result_queue.put(rows)
             batch_queue.task_done()
     except Exception as e:
+        # propagate any exception through the result queue
         await result_queue.put(e)
         raise
 
@@ -740,11 +743,6 @@ async def _create_table_rows_generator(
             assert non_context_table_name in data
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
-    # initialize queues for async communication
-    batch_queue = asyncio.LifoQueue()
-    result_queue = asyncio.Queue()
-    retry_queue = asyncio.Queue()
-
     # calculate batch_sizes
     n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
     batch_sizes = [batch_size] * n_total_batches
@@ -752,6 +750,11 @@ async def _create_table_rows_generator(
         # optimise the last batch size for flat tables
         # +2 because LLM may not always count the rows correctly
         batch_sizes[-1] = sample_size - sum(batch_sizes[:-1]) + 2
+
+    # initialize queues for async communication
+    batch_queue = asyncio.LifoQueue()
+    result_queue = asyncio.Queue()
+    retry_queue = asyncio.Queue()
 
     # populate batch queue
     for batch_idx in range(n_total_batches):
@@ -829,12 +832,12 @@ async def _create_table_rows_generator(
             )
         result = await result_queue.get()
         if isinstance(result, Exception):
-            # translate sentinal value None, which is used to signal worker failure, to a runtime error
-            raise RuntimeError("Worker failed unexpectedly")
-        elif result == "max retries reached":
-            raise RuntimeError("Max retries reached")
-        else:
-            rows = result
+            # if an exception is raised by any worker, cancel all workers and raise that exception
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers)
+            raise result
+        rows = result
         for row_idx, row in enumerate(result):
             yield row
             if context_batches is None or row_idx == len(rows) - 1:

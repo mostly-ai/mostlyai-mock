@@ -82,5 +82,5 @@ def test_retries():
     }
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         with pytest.raises(RuntimeError) as e:
-            mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
+            mock.sample(tables=tables, sample_size=30, model="openai/gpt-4.1-nano")
         assert "Too many malformed batches were generated" in str(e.value)
