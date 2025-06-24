@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import litellm
 import pandas as pd
+import pytest
 
 from mostlyai import mock
 
@@ -64,3 +65,22 @@ def test_single_table():
             "price_per_night": "float64[pyarrow]",
             "room_number": "int64[pyarrow]",
         }
+
+
+def test_retries():
+    def litellm_completion_with_mock_response(*args, **kwargs):
+        mock_response = '{"rows": [{"name": "John Doe"}]}'
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
+
+    tables = {
+        "guests": {
+            "columns": {
+                "name": {"dtype": "string"},
+                "age": {"dtype": "integer"},
+            }
+        }
+    }
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        with pytest.raises(RuntimeError) as e:
+            mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
+        assert "Too many malformed batches were generated" in str(e.value)
