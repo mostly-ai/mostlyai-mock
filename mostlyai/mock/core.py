@@ -695,7 +695,7 @@ async def _worker(
             batch_queue.task_done()
     except Exception as e:
         # propagate any exception through the result queue
-        await result_queue.put(e)
+        await result_queue.put((batch_idx, e))
         raise
 
 
@@ -788,17 +788,13 @@ async def _create_table_rows_generator(
                 table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
             }
 
-        await batch_queue.put(
-            (
-                batch_idx,
-                {
-                    "batch_size": batch_sizes[batch_idx],
-                    "existing_batch": existing_batch,
-                    "context_batch": context_batch,
-                    "non_context_batch": non_context_batch,
-                },
-            )
-        )
+        task = {
+            "batch_size": batch_sizes[batch_idx],
+            "existing_batch": existing_batch,
+            "context_batch": context_batch,
+            "non_context_batch": non_context_batch,
+        }
+        await batch_queue.put((batch_idx, task))
 
     # initialize workers
     n_workers = min(n_total_batches, n_workers)
@@ -833,22 +829,18 @@ async def _create_table_rows_generator(
             # but that means we may need to generate more batches to reach the sample size
             # +2 because LLM may not always count the rows correctly
             n_total_batches += 1
-            await batch_queue.put(
-                (
-                    n_total_batches,
-                    {
-                        "batch_size": sample_size - n_yielded_sequences + 2,
-                    },
-                )
-            )
-        result = await result_queue.get()
+            task = {
+                "batch_size": sample_size - n_yielded_sequences + 2,
+            }
+            await batch_queue.put((n_total_batches, task))
+        batch_idx, result = await result_queue.get()
         if isinstance(result, Exception):
             # if an exception is raised by any worker, cancel all workers and raise that exception
             for worker in workers:
                 worker.cancel()
             await asyncio.gather(*workers)
             raise result
-        batch_idx, rows = result
+        rows = result
         for row_idx, row in enumerate(rows):
             yield (batch_idx, row)
             if context_batches is None or row_idx == len(rows) - 1:
