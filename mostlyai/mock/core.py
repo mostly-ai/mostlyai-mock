@@ -706,6 +706,17 @@ async def _create_table_rows_generator(
         sample_size = len(context_data)
         context_batches = _batched(context_data, batch_size)
 
+    # derive non-context data (if more than one foreign key is present)
+    non_context_data: dict[str, pd.DataFrame] = {}
+    if foreign_keys and len(foreign_keys) > 1:
+        assert non_context_size is not None
+        for fk in foreign_keys[1:]:
+            if fk.referenced_table == name:  # self-dependency is not considered as non-context
+                continue
+            non_context_table_name = fk.referenced_table
+            assert non_context_table_name in data
+            non_context_data[non_context_table_name] = data[non_context_table_name]
+
     # initialize queues for async communication
     batch_queue = asyncio.LifoQueue()
     result_queue = asyncio.Queue()
@@ -720,10 +731,18 @@ async def _create_table_rows_generator(
 
     # populate batch queue
     for batch_idx in range(n_total_batches):
+        # sample candidate rows from non-context tables for current batch
+        non_context_batch: dict[str, pd.DataFrame] | None = None
+        if non_context_data:
+            non_context_batch = {
+                table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
+            }
+
         await batch_queue.put(
             {
                 "batch_size": batch_sizes[batch_idx],
                 "context_batch": context_batches[batch_idx] if context_batches is not None else None,
+                "non_context_batch": non_context_batch,
             }
         )
 
@@ -755,10 +774,13 @@ async def _create_table_rows_generator(
         if rows is None:
             # translate sentinal value None, which is used to signal worker failure, to a runtime error
             raise RuntimeError("Worker failed unexpectedly")
-        for row in rows:
+        for row_idx, row in enumerate(rows):
             yield row
-            # TODO: increment based on context_batch value
-            n_yielded_sequences += 1
+            if context_batches is None or row_idx == len(rows) - 1:
+                # in case of flat table, each row is considered a single sequence
+                # in case of linked table, all rows are considered a single sequence
+                # NOTE: this assumes that we generate a single sequence per batch
+                n_yielded_sequences += 1
             if n_yielded_sequences >= sample_size:
                 break
         n_completed_batches += 1
