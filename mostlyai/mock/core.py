@@ -1226,7 +1226,7 @@ def sample(
 
     llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
 
-    n_workers = 5 if optimise_for == "speed" else 1
+    n_workers = 10 if optimise_for == "speed" else 1
 
     sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
