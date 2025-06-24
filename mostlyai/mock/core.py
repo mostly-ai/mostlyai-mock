@@ -690,11 +690,18 @@ async def _create_table_rows_generator(
     n_workers: int,
     llm_config: LLMConfig,
 ) -> AsyncGenerator[dict]:
-    batch_size = 20
+    batch_size = 20  # generate 20 root table rows at a time
 
     llm_output_format = LLMOutputFormat.JSON if _supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
 
     previous_rows = deque(maxlen=previous_rows_size)
+
+    # derive data for augmentation
+    existing_data: pd.DataFrame | None = None
+    if name in data:
+        existing_data = data[name]
+        sample_size = len(existing_data)
+        batch_size = 10  # augment 10 root table rows at a time
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
@@ -732,6 +739,24 @@ async def _create_table_rows_generator(
 
     # populate batch queue
     for batch_idx in range(n_total_batches):
+        context_batch = context_batches[batch_idx] if context_batches is not None else None
+
+        # pick existing rows for current batch
+        existing_batch: pd.DataFrame | None = None
+        if existing_data is not None:
+            if context_batch is None:
+                # progressively pick portions of existing data in case of root tables
+                assert batch_size is not None
+                existing_batch = existing_data.iloc[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+            else:
+                # pick existing rows that match current context batch
+                assert foreign_keys is not None
+                context_table_name, foreign_key = foreign_keys[0].referenced_table, foreign_keys[0].column
+                context_primary_key = primary_keys[context_table_name]
+                existing_batch = existing_data[existing_data[foreign_key].isin(context_batch[context_primary_key])]
+            if existing_batch.empty:
+                existing_batch = None
+
         # sample candidate rows from non-context tables for current batch
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
@@ -742,7 +767,8 @@ async def _create_table_rows_generator(
         await batch_queue.put(
             {
                 "batch_size": batch_sizes[batch_idx],
-                "context_batch": context_batches[batch_idx] if context_batches is not None else None,
+                "existing_batch": existing_batch,
+                "context_batch": context_batch,
                 "non_context_batch": non_context_batch,
             }
         )
@@ -770,7 +796,20 @@ async def _create_table_rows_generator(
 
     n_completed_batches = 0
     n_yielded_sequences = 0
-    while n_completed_batches < n_total_batches and n_yielded_sequences < sample_size:
+    while n_yielded_sequences < sample_size:
+        if n_completed_batches >= n_total_batches:
+            assert context_data is None, "n_total_batches is fixed for linked tables"
+            assert existing_data is None, "n_total_batches is fixed for data enrichment"
+            # LLMs may not generate exactly the number of rows requested
+            # in case of flat tables, we still accept such incomplete batches,
+            # but that means we may need to generate more batches to reach the sample size
+            # +2 because LLM may not always count the rows correctly
+            n_total_batches += 1
+            await batch_queue.put(
+                {
+                    "batch_size": sample_size - n_yielded_sequences + 2,
+                }
+            )
         rows = await result_queue.get()
         if rows is None:
             # translate sentinal value None, which is used to signal worker failure, to a runtime error
