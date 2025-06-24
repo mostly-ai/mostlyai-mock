@@ -568,7 +568,7 @@ async def _worker(
             do_repeat_task = False
 
             # get task from the batch_queue
-            task = await batch_queue.get()
+            batch_idx, task = await batch_queue.get()
             if task is None:
                 # no more tasks for the worker; break the loop
                 batch_queue.task_done()
@@ -665,7 +665,7 @@ async def _worker(
                 await retry_queue.put(1)
                 if retry_queue.qsize() < 10:
                     # put task back to the front of the batch queue
-                    await batch_queue.put(task)
+                    await batch_queue.put((batch_idx, task))
                 else:
                     # inform the orchestrator that max retries were reached
                     raise RuntimeError(
@@ -691,7 +691,7 @@ async def _worker(
                 previous_rows.extend(rows)
 
             # put rows to the result queue and mark current task as done
-            await result_queue.put(rows)
+            await result_queue.put((batch_idx, rows))
             batch_queue.task_done()
     except Exception as e:
         # propagate any exception through the result queue
@@ -757,7 +757,7 @@ async def _create_table_rows_generator(
         batch_sizes[-1] = sample_size - sum(batch_sizes[:-1]) + 2
 
     # initialize queues for async communication
-    batch_queue = asyncio.LifoQueue()
+    batch_queue = asyncio.PriorityQueue()
     result_queue = asyncio.Queue()
     retry_queue = asyncio.Queue()
 
@@ -789,12 +789,15 @@ async def _create_table_rows_generator(
             }
 
         await batch_queue.put(
-            {
-                "batch_size": batch_sizes[batch_idx],
-                "existing_batch": existing_batch,
-                "context_batch": context_batch,
-                "non_context_batch": non_context_batch,
-            }
+            (
+                batch_idx,
+                {
+                    "batch_size": batch_sizes[batch_idx],
+                    "existing_batch": existing_batch,
+                    "context_batch": context_batch,
+                    "non_context_batch": non_context_batch,
+                },
+            )
         )
 
     # initialize workers
@@ -831,9 +834,12 @@ async def _create_table_rows_generator(
             # +2 because LLM may not always count the rows correctly
             n_total_batches += 1
             await batch_queue.put(
-                {
-                    "batch_size": sample_size - n_yielded_sequences + 2,
-                }
+                (
+                    n_total_batches,
+                    {
+                        "batch_size": sample_size - n_yielded_sequences + 2,
+                    },
+                )
             )
         result = await result_queue.get()
         if isinstance(result, Exception):
@@ -842,9 +848,9 @@ async def _create_table_rows_generator(
                 worker.cancel()
             await asyncio.gather(*workers)
             raise result
-        rows = result
-        for row_idx, row in enumerate(result):
-            yield row
+        batch_idx, rows = result
+        for row_idx, row in enumerate(rows):
+            yield (batch_idx, row)
             if context_batches is None or row_idx == len(rows) - 1:
                 # in case of flat table, each row is considered a single sequence
                 # in case of linked table, all rows are considered a single sequence
@@ -858,7 +864,7 @@ async def _create_table_rows_generator(
     # gracefully shutdown workers
     await batch_queue.join()
     for _ in workers:
-        await batch_queue.put(None)
+        await batch_queue.put((n_total_batches + 1, None))
     await asyncio.gather(*workers)
 
 
@@ -894,7 +900,13 @@ async def _convert_table_rows_generator_to_df(
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
-    df = pd.DataFrame([row async for row in table_rows_generator])
+    # consume entire generator
+    items = [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator]
+    # sort items by batch_idx to maintain order (relevant especially for keeping the order of existing data)
+    items = sorted(items, key=lambda x: x["batch_idx"])
+    # extract rows and convert to DataFrame
+    rows = [item["row"] for item in items]
+    df = pd.DataFrame(rows)
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
