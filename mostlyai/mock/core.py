@@ -25,6 +25,7 @@ from enum import Enum
 from io import StringIO
 from typing import Any, Literal
 
+import dateutil.parser
 import litellm
 import pandas as pd
 import tenacity
@@ -798,9 +799,17 @@ async def _convert_table_rows_generator_to_df(
     columns: dict[str, ColumnConfig],
 ) -> pd.DataFrame:
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
+        df = df.copy()
         for column_name, column_config in columns.items():
             if column_config.dtype in [DType.DATE, DType.DATETIME]:
-                df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
+
+                def harmonize_datetime(x):
+                    try:
+                        return dateutil.parser.parse(x)
+                    except Exception:
+                        return pd.NaT
+
+                df[column_name] = pd.to_datetime(df[column_name].apply(harmonize_datetime), errors="coerce")
             elif column_config.dtype is DType.INTEGER:
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce", downcast="integer").astype(
                     "int64[pyarrow]"
@@ -817,7 +826,7 @@ async def _convert_table_rows_generator_to_df(
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
-    df = pd.DataFrame([item async for item in table_rows_generator])
+    df = pd.DataFrame([row async for row in table_rows_generator])
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
