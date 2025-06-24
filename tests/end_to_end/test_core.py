@@ -24,10 +24,7 @@ litellm_completion = litellm.completion
 
 def test_single_table():
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = (
-            "guest_id,nationality,name,gender,age,date_of_birth,checkin_time,is_vip,price_per_night,room_number\n"
-            "1,US,John Doe,male,25,1990-01-01,2025-05-01 10:00:00,True,100.0,101\n"
-        )
+        mock_response = '{"rows": [{"guest_id": 1, "nationality": "US", "name": "John Doe", "gender": "male", "age": 25, "date_of_birth": "1990-01-01", "checkin_time": "2025-05-01 10:00:00", "is_vip": true, "price_per_night": 100.0, "room_number": 101}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
@@ -52,7 +49,7 @@ def test_single_table():
             "primary_key": "guest_id",
         }
     }
-    with patch("mostlyai.mock.core.litellm.completion", side_effect=litellm_completion_with_mock_response):
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         df = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
         assert df.shape == (5, 10)
         assert df.dtypes.to_dict() == {
