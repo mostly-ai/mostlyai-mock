@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import itertools
 import json
 import math
@@ -221,6 +222,15 @@ async def _sample_table(
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
+
+
+def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_sample_table(*args, **kwargs))
+    finally:
+        loop.close()
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
@@ -890,7 +900,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
-    optimise_for: Literal["speed", "quality"] = "quality",
+    optimise_for: Literal["speed", "quality"] = "speed",
     return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
@@ -1124,8 +1134,10 @@ def sample(
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
-        df = asyncio.run(
-            _sample_table(
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _sample_table_sync,
                 name=table_name,
                 prompt=table_config.prompt,
                 columns=table_config.columns,
@@ -1138,7 +1150,7 @@ def sample(
                 n_workers=n_workers,
                 llm_config=llm_config,
             )
-        )
+            df = future.result()
         data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
