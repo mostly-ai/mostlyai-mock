@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import itertools
 import json
 import math
 from collections import deque
@@ -507,6 +506,11 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         yield dict(zip(header, last_row))
 
 
+async def _yield_empty_rows(n_rows: int) -> AsyncGenerator[dict]:
+    for _ in range(n_rows):
+        yield {}
+
+
 def _create_structured_output_schema(
     columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
 ) -> type[BaseModel]:
@@ -626,7 +630,8 @@ async def _worker(
                 rows_stream = yield_rows_from_chunks_stream(response)
             else:
                 # skip roundtrip to LLM in case all columns are provided in existing data
-                rows_stream = itertools.repeat({})
+                assert existing_batch is not None
+                rows_stream = _yield_empty_rows(len(existing_batch))
 
             # we first generate all rows in the batch, in order to run consistency checks
             rows_generated_part = []

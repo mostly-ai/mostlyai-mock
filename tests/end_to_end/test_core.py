@@ -51,7 +51,7 @@ def test_single_table():
         }
     }
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
-        df = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
+        df = mock.sample(tables=tables, sample_size=5)
         assert df.shape == (5, 10)
         assert df.dtypes.to_dict() == {
             "guest_id": "int64[pyarrow]",
@@ -82,5 +82,22 @@ def test_retries():
     }
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         with pytest.raises(RuntimeError) as e:
-            mock.sample(tables=tables, sample_size=30, model="openai/gpt-4.1-nano")
+            mock.sample(tables=tables, sample_size=30)
         assert "Too many malformed batches were generated" in str(e.value)
+
+
+def test_existing_data():
+    # all columns are present in the existing data => no LLM calls should be made
+    tables = {
+        "guests": {
+            "columns": {
+                "name": {"dtype": "string"},
+                "age": {"dtype": "integer"},
+            }
+        }
+    }
+    with patch("mostlyai.mock.core.litellm.acompletion") as mock_acompletion:
+        existing_guests = pd.DataFrame({"name": ["John Doe"], "age": [25]})
+        df = mock.sample(tables=tables, existing_data={"guests": existing_guests})
+        pd.testing.assert_frame_equal(df, existing_guests, check_dtype=False)
+        mock_acompletion.assert_not_called()
