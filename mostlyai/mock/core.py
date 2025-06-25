@@ -592,6 +592,19 @@ async def _worker(
                     columns=columns, existing_data=existing_batch
                 )
 
+            # TEMPORARY: LiteLLM and OpenAI treat response_format differently
+            if structured_output_schema:
+                response_format = (
+                    structured_output_schema
+                    if openai_client is None
+                    else {
+                        "type": "json_schema",
+                        "schema": structured_output_schema.model_json_schema(),
+                    }
+                )
+            else:
+                response_format = None
+
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
             user_prompt = _create_table_prompt(
@@ -616,7 +629,7 @@ async def _worker(
                     # make LLM call with LiteLLM
                     response = await _completion_with_retries(
                         messages=messages,
-                        response_format=structured_output_schema,
+                        response_format=response_format,
                         temperature=llm_config.temperature,
                         top_p=llm_config.top_p,
                         model=llm_config.model,
@@ -627,10 +640,7 @@ async def _worker(
                     # make LLM call with OpenAI client (OpenRouter)
                     response = await openai_client.chat.completions.create(
                         messages=messages,
-                        response_format={
-                            "type": "json_schema",
-                            "schema": structured_output_schema.model_json_schema(),
-                        },
+                        response_format=response_format,
                         temperature=llm_config.temperature,
                         top_p=llm_config.top_p,
                         model=llm_config.model,
@@ -737,8 +747,8 @@ async def _create_table_rows_generator(
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
-    # TEMPORARY: always use JSON output in this branch
-    llm_output_format = LLMOutputFormat.JSON
+    # TEMPORARY: always use CSV output in this branch
+    llm_output_format = LLMOutputFormat.CSV
 
     previous_rows = deque(maxlen=previous_rows_size)
 
