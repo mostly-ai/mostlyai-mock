@@ -450,7 +450,7 @@ def _completion_with_retries(*args, **kwargs):
 
 async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
     # starting with dirty buffer is to handle the `{"rows": []}` case
-    buffer = "garbage"
+    buffer = list("garbage")
     rows_json_started = False
     in_row_json = False
     async for chunk in response:
@@ -458,7 +458,7 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
         if delta is None:
             continue
         for char in delta:
-            buffer += char
+            buffer.append(char)
             if char == "{" and not rows_json_started:
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 # *                                 <- start of rows json stream
@@ -466,31 +466,34 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
             elif char == "{" and not in_row_json:
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #           *                       <- start of single row json stream
-                buffer = "{"
+                buffer = list("{")
                 in_row_json = True
             elif char == "}":
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #                        *     * *  <- any of these
                 try:
-                    row = json.loads(buffer)
+                    row = json.loads("".join(buffer))
                     yield row
-                    buffer = ""
+                    buffer = list()
                     in_row_json = False
                 except json.JSONDecodeError:
                     continue
 
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-    buffer = ""
+    def buffer_to_row(buffer: list[str]) -> list[str]:
+        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+
+    buffer = list()
     header = None
     async for chunk in response:
         delta = chunk.choices[0].delta.content
         if delta is None:
             continue
         for char in delta:
-            buffer += char
+            buffer.append(char)
             if char == "\n":
-                row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+                row = buffer_to_row(buffer)
                 if header is None:
                     # column1,column2,column3\n
                     #                        ** <- end of header row
@@ -499,10 +502,10 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
                     # value_1,value_2,value_3\n
                     #                        ** <- end of data row
                     yield dict(zip(header, row))
-                buffer = ""
+                buffer = list()
     if buffer:
         # last row might not finish with a newline, in which case the buffer would not be empty here
-        last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
+        last_row = buffer_to_row(buffer)
         yield dict(zip(header, last_row))
 
 
