@@ -1038,7 +1038,7 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
-        n_workers (int): The number of concurrent workers making the LLM calls. Default is 10.
+        n_workers (int): The number of concurrent workers making the LLM calls. Default is 10. The value is clamped to the range [1, 10].
             If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
 
@@ -1227,6 +1227,8 @@ def sample(
 
     sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
+
+    n_workers = max(min(n_workers, 10), 1)
 
     execution_plan: list[str] = _build_execution_plan(config)
 
