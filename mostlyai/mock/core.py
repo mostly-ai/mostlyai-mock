@@ -28,6 +28,7 @@ import dateutil.parser
 import litellm
 import pandas as pd
 import tenacity
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm.asyncio import tqdm
 
@@ -553,6 +554,16 @@ async def _worker(
     llm_config: LLMConfig,
 ):
     try:
+        # TEMPORARY: use OpenRouter for all models that start with "openrouter/"; trim the prefix
+        if llm_config.model.startswith("openrouter/"):
+            openai_client = AsyncOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=llm_config.api_key,
+            )
+            llm_config.model = llm_config.model[len("openrouter/") :]
+        else:
+            openai_client = None
+
         while True:
             do_repeat_task = False
 
@@ -581,15 +592,6 @@ async def _worker(
                     columns=columns, existing_data=existing_batch
                 )
 
-            # construct litellm kwargs
-            litellm_kwargs = {
-                "temperature": llm_config.temperature,
-                "top_p": llm_config.top_p,
-                "model": llm_config.model,
-                "api_key": llm_config.api_key,
-                "stream": True,
-            }
-
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
             user_prompt = _create_table_prompt(
@@ -609,9 +611,31 @@ async def _worker(
 
             if generated_columns:
                 # make LLM call
-                response = await _completion_with_retries(
-                    messages=messages, response_format=structured_output_schema, **litellm_kwargs
-                )
+                # TEMPORARY: support both LiteLLM and OpenRouter (through OpenAI client)
+                if openai_client is None:
+                    # make LLM call with LiteLLM
+                    response = await _completion_with_retries(
+                        messages=messages,
+                        response_format=structured_output_schema,
+                        temperature=llm_config.temperature,
+                        top_p=llm_config.top_p,
+                        model=llm_config.model,
+                        api_key=llm_config.api_key,
+                        stream=True,
+                    )
+                else:
+                    # make LLM call with OpenAI client (OpenRouter)
+                    response = await openai_client.chat.completions.create(
+                        messages=messages,
+                        response_format={
+                            "type": "json_schema",
+                            "schema": structured_output_schema.model_json_schema(),
+                        },
+                        temperature=llm_config.temperature,
+                        top_p=llm_config.top_p,
+                        model=llm_config.model,
+                        stream=True,
+                    )
                 yield_rows_from_chunks_stream = {
                     LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
                     LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
@@ -713,7 +737,8 @@ async def _create_table_rows_generator(
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
-    llm_output_format = LLMOutputFormat.JSON if supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
+    # TEMPORARY: always use JSON output in this branch
+    llm_output_format = LLMOutputFormat.JSON
 
     previous_rows = deque(maxlen=previous_rows_size)
 
