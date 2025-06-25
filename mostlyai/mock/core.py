@@ -483,7 +483,12 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
     def buffer_to_row(buffer: list[str]) -> list[str]:
-        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+        # TEMPORARY: more robust CSV parsing; probably good idea to have this on main too
+        try:
+            return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+        except Exception as e:
+            print(f"Error parsing CSV: {e}")
+            return []
 
     buffer = list()
     header = None
@@ -552,18 +557,9 @@ async def _worker(
     n_workers: int,
     llm_output_format: LLMOutputFormat,
     llm_config: LLMConfig,
+    openai_client: AsyncOpenAI | None,
 ):
     try:
-        # TEMPORARY: use OpenRouter for all models that start with "openrouter/"; trim the prefix
-        if llm_config.model.startswith("openrouter/"):
-            openai_client = AsyncOpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=llm_config.api_key,
-            )
-            llm_config.model = llm_config.model[len("openrouter/") :]
-        else:
-            openai_client = None
-
         while True:
             do_repeat_task = False
 
@@ -640,7 +636,7 @@ async def _worker(
                     # make LLM call with OpenAI client (OpenRouter)
                     response = await openai_client.chat.completions.create(
                         messages=messages,
-                        response_format=response_format,
+                        response_format=None,  # TEMPORARY: if Structured Outputs are used, Cerebras is not selected as a provider
                         temperature=llm_config.temperature,
                         top_p=llm_config.top_p,
                         model=llm_config.model,
@@ -829,6 +825,16 @@ async def _create_table_rows_generator(
         }
         await batch_queue.put((batch_idx, task))
 
+    # TEMPORARY: use OpenRouter for all models that start with "openrouter/"; trim the prefix
+    if llm_config.model.startswith("openrouter/"):
+        openai_client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=llm_config.api_key,
+        )
+        llm_config.model = llm_config.model[len("openrouter/") :]
+    else:
+        openai_client = None
+
     # initialize workers
     n_workers = min(n_total_batches, n_workers)
     workers = [
@@ -846,6 +852,7 @@ async def _create_table_rows_generator(
                 n_workers=n_workers,
                 llm_output_format=llm_output_format,
                 llm_config=llm_config,
+                openai_client=openai_client,
             )
         )
         for _ in range(n_workers)
