@@ -1003,7 +1003,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
-    optimise_for: Literal["speed", "quality"] = "speed",
+    n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
@@ -1040,7 +1040,8 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
-        optimise_for (Literal["speed", "quality"]): The optimisation target. Default is "speed".
+        n_workers (int): The number of concurrent workers making the LLM calls. Default is 10.
+            If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
 
     Returns:
@@ -1225,8 +1226,6 @@ def sample(
     config = MockConfig(tables)
 
     llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
-
-    n_workers = 10 if optimise_for == "speed" else 1
 
     sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
