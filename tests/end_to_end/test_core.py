@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import litellm
 import pandas as pd
+import pytest
 
 from mostlyai import mock
 
@@ -24,10 +25,7 @@ litellm_completion = litellm.completion
 
 def test_single_table():
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = (
-            "guest_id,nationality,name,gender,age,date_of_birth,checkin_time,is_vip,price_per_night,room_number\n"
-            "1,US,John Doe,male,25,1990-01-01,2025-05-01 10:00:00,True,100.0,101\n"
-        )
+        mock_response = '{"rows": [{"guest_id": 1, "nationality": "US", "name": "John Doe", "gender": "male", "age": 25, "date_of_birth": "1990-01-01", "checkin_time": "2025-05-01 10:00:00", "is_vip": true, "price_per_night": 100.0, "room_number": 101}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
@@ -52,8 +50,8 @@ def test_single_table():
             "primary_key": "guest_id",
         }
     }
-    with patch("mostlyai.mock.core.litellm.completion", side_effect=litellm_completion_with_mock_response):
-        df = mock.sample(tables=tables, sample_size=5, model="openai/gpt-4.1-nano")
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        df = mock.sample(tables=tables, sample_size=5)
         assert df.shape == (5, 10)
         assert df.dtypes.to_dict() == {
             "guest_id": "int64[pyarrow]",
@@ -67,3 +65,39 @@ def test_single_table():
             "price_per_night": "float64[pyarrow]",
             "room_number": "int64[pyarrow]",
         }
+
+
+def test_retries():
+    def litellm_completion_with_mock_response(*args, **kwargs):
+        mock_response = '{"rows": [{"name": "John Doe"}]}'
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
+
+    tables = {
+        "guests": {
+            "columns": {
+                "name": {"dtype": "string"},
+                "age": {"dtype": "integer"},
+            }
+        }
+    }
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        with pytest.raises(RuntimeError) as e:
+            mock.sample(tables=tables, sample_size=30)
+        assert "Too many malformed batches were generated" in str(e.value)
+
+
+def test_existing_data():
+    # all columns are present in the existing data => no LLM calls should be made
+    tables = {
+        "guests": {
+            "columns": {
+                "name": {"dtype": "string"},
+                "age": {"dtype": "integer"},
+            }
+        }
+    }
+    with patch("mostlyai.mock.core.litellm.acompletion") as mock_acompletion:
+        existing_guests = pd.DataFrame({"name": ["John Doe"], "age": [25]})
+        df = mock.sample(tables=tables, existing_data={"guests": existing_guests})
+        pd.testing.assert_frame_equal(df, existing_guests, check_dtype=False)
+        mock_acompletion.assert_not_called()

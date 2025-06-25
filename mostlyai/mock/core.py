@@ -14,19 +14,22 @@
 
 from __future__ import annotations
 
-import itertools
+import asyncio
+import concurrent.futures
 import json
+import math
 from collections import deque
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
 
+import dateutil.parser
 import litellm
 import pandas as pd
 import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
-from tqdm import tqdm
+from tqdm.asyncio import tqdm
 
 litellm.suppress_debug_info = True
 
@@ -189,17 +192,18 @@ class ForeignKeyConfig(BaseModel):
     prompt: str | None = None
 
 
-def _sample_table(
+async def _sample_table(
     *,
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    foreign_keys: list[ForeignKeyConfig] | None,
-    primary_keys: dict[str, str] | None,
+    foreign_keys: list[ForeignKeyConfig],
+    primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
     sample_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
+    n_workers: int,
     llm_config: LLMConfig,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
@@ -212,11 +216,21 @@ def _sample_table(
         sample_size=sample_size,
         previous_rows_size=previous_rows_size,
         non_context_size=non_context_size,
+        n_workers=n_workers,
         llm_config=llm_config,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
+
+
+def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_sample_table(*args, **kwargs))
+    finally:
+        loop.close()
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
@@ -248,9 +262,9 @@ def _create_table_prompt(
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    primary_keys: dict[str, str] | None,
+    primary_keys: dict[str, str],
     batch_size: int | None,
-    foreign_keys: list[ForeignKeyConfig] | None,
+    foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
     non_context_data: dict[str, pd.DataFrame] | None,
@@ -421,124 +435,287 @@ def _create_table_prompt(
     return prompt
 
 
-def _create_table_rows_generator(
+def _completion_with_retries(*args, **kwargs):
+    n_attempts = 3
+
+    def print_on_retry(_):
+        print(" * Calling LLM again... * ", end="", flush=True)
+
+    # try up to 3 times, print a message to the user on each retry
+    retryer = tenacity.AsyncRetrying(
+        stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
+    )
+    return retryer(litellm.acompletion, *args, **kwargs)
+
+
+async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    # starting with dirty buffer is to handle the `{"rows": []}` case
+    buffer = list("garbage")
+    rows_json_started = False
+    in_row_json = False
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta is None:
+            continue
+        for char in delta:
+            buffer.append(char)
+            if char == "{" and not rows_json_started:
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                # *                                 <- start of rows json stream
+                rows_json_started = True
+            elif char == "{" and not in_row_json:
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                #           *                       <- start of single row json stream
+                buffer = list("{")
+                in_row_json = True
+            elif char == "}":
+                # {"rows": [{"name": "Jo\}h\{n"}]}
+                #                        *     * *  <- any of these
+                try:
+                    row = json.loads("".join(buffer))
+                    yield row
+                    buffer = list()
+                    in_row_json = False
+                except json.JSONDecodeError:
+                    continue
+
+
+async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    def buffer_to_row(buffer: list[str]) -> list[str]:
+        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+
+    buffer = list()
+    header = None
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta is None:
+            continue
+        for char in delta:
+            buffer.append(char)
+            if char == "\n":
+                row = buffer_to_row(buffer)
+                if header is None:
+                    # column1,column2,column3\n
+                    #                        ** <- end of header row
+                    header = row
+                else:
+                    # value_1,value_2,value_3\n
+                    #                        ** <- end of data row
+                    yield dict(zip(header, row))
+                buffer = list()
+    if buffer:
+        # last row might not finish with a newline, in which case the buffer would not be empty here
+        last_row = buffer_to_row(buffer)
+        yield dict(zip(header, last_row))
+
+
+def _create_structured_output_schema(
+    columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+) -> type[BaseModel]:
+    def create_annotation(column_config: ColumnConfig) -> type:
+        if column_config.values or column_config.dtype is DType.CATEGORY:
+            return Literal[tuple(column_config.values)]
+        return {
+            DType.INTEGER: int | None,
+            DType.FLOAT: float | None,
+            DType.STRING: str | None,
+            DType.BOOLEAN: bool | None,
+            # response_format has limited support for JSON Schema features
+            # thus we represent dates and datetimes as strings
+            DType.DATE: str | None,
+            DType.DATETIME: str | None,
+        }[column_config.dtype]
+
+    fields = {}
+    for column_name, column_config in columns.items():
+        if existing_data is not None and column_name in existing_data.columns:
+            continue  # skip columns that already exist in existing data
+        annotation = create_annotation(column_config)
+        fields[column_name] = (annotation, Field(...))
+    TableRow = create_model("TableRow", **fields)
+    TableRows = create_model("TableRows", rows=(list[TableRow], ...))
+    return TableRows
+
+
+async def _worker(
     *,
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    foreign_keys: list[ForeignKeyConfig] | None,
-    primary_keys: dict[str, str] | None,
+    foreign_keys: list[ForeignKeyConfig],
+    primary_keys: dict[str, str],
+    previous_rows: deque[dict],
+    batch_queue: asyncio.Queue,
+    result_queue: asyncio.Queue,
+    retry_queue: asyncio.Queue,
+    n_workers: int,
+    llm_output_format: LLMOutputFormat,
+    llm_config: LLMConfig,
+):
+    try:
+        while True:
+            do_repeat_task = False
+
+            # get task from the batch_queue
+            batch_idx, task = await batch_queue.get()
+            if task is None:
+                # no more tasks for the worker; break the loop
+                batch_queue.task_done()
+                break
+
+            # deconstruct task
+            batch_size = task["batch_size"]
+            existing_batch = task.get("existing_batch")
+            context_batch = task.get("context_batch")
+            non_context_batch = task.get("non_context_batch")
+
+            # resolve columns to generate
+            generated_columns = set(columns.keys())
+            if existing_batch is not None:
+                generated_columns = generated_columns - set(existing_batch.columns)
+
+            # construct schema for Structured Outputs (applies to JSON LLMOutputFormat only)
+            structured_output_schema = None
+            if llm_output_format == LLMOutputFormat.JSON:
+                structured_output_schema = _create_structured_output_schema(
+                    columns=columns, existing_data=existing_batch
+                )
+
+            # construct litellm kwargs
+            litellm_kwargs = {
+                "temperature": llm_config.temperature,
+                "top_p": llm_config.top_p,
+                "model": llm_config.model,
+                "api_key": llm_config.api_key,
+                "stream": True,
+            }
+
+            # construct messages
+            system_prompt = _create_system_prompt(llm_output_format)
+            user_prompt = _create_table_prompt(
+                name=name,
+                prompt=prompt,
+                columns=columns,
+                primary_keys=primary_keys,
+                batch_size=batch_size,
+                foreign_keys=foreign_keys,
+                existing_data=existing_batch,
+                context_data=context_batch,
+                non_context_data=non_context_batch,
+                previous_rows=list(previous_rows),
+                llm_output_format=llm_output_format,
+            )
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+            if generated_columns:
+                # make LLM call
+                response = await _completion_with_retries(
+                    messages=messages, response_format=structured_output_schema, **litellm_kwargs
+                )
+                yield_rows_from_chunks_stream = {
+                    LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
+                    LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
+                }[llm_output_format]
+                rows_stream = yield_rows_from_chunks_stream(response)
+            else:
+                # skip roundtrip to LLM in case all columns are provided in existing data
+                assert existing_batch is not None
+
+                async def _yield_empty_rows(n_rows: int) -> AsyncGenerator[dict]:
+                    for _ in range(n_rows):
+                        yield {}
+
+                rows_stream = _yield_empty_rows(len(existing_batch))
+
+            # we first generate all rows in the batch, in order to run consistency checks
+            rows_generated_part = []
+            async for row_generated_part in rows_stream:
+                # remove internal columns, if exist
+                row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
+
+                if set(row_generated_part.keys()) != generated_columns:
+                    if context_batch is not None or existing_batch is not None:
+                        # in case of linked tables and data enrichment, it's critical that all rows have expected columns
+                        print(" * Malformed row, repeating batch... * ", end="", flush=True)
+                        do_repeat_task = True
+                        break
+                    else:
+                        # in case of flat tables generation, each row is independent, therefore we only skip the invalid row
+                        continue
+                rows_generated_part.append(row_generated_part)
+
+            # at least some valid rows are expected per batch, repeat the batch otherwise
+            if len(rows_generated_part) == 0:
+                print(" * No valid rows were generated, repeating batch... * ", end="", flush=True)
+                do_repeat_task = True
+
+            # in case of data enrichment, check that all rows were completed successfully
+            if existing_batch is not None and len(rows_generated_part) != len(existing_batch):
+                print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
+                do_repeat_task = True
+
+            if do_repeat_task:
+                # allow 10 retries across all workers before propagating the exception to the orchestrator
+                await retry_queue.put(1)
+                if retry_queue.qsize() < 10:
+                    # put task back to the front of the batch queue
+                    await batch_queue.put((batch_idx, task))
+                else:
+                    # inform the orchestrator that max retries were reached
+                    raise RuntimeError(
+                        "Too many malformed batches were generated. "
+                        "Consider changing the model in order to make generation more stable."
+                    )
+
+                # mark current task as done
+                batch_queue.task_done()
+                continue
+
+            # collapse existing and generated parts into coherent rows
+            rows = []
+            for row_idx, row_generated_part in enumerate(rows_generated_part):
+                row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
+                row = {**row_generated_part, **row_existing_part}
+                # keep columns order according to user's spec
+                row = {column: row[column] for column in columns.keys()}
+                rows.append(row)
+
+            # track previous rows for improved data consistency, in case of sequential generation
+            if n_workers == 1:
+                previous_rows.extend(rows)
+
+            # put rows to the result queue and mark current task as done
+            await result_queue.put((batch_idx, rows))
+            batch_queue.task_done()
+    except Exception as e:
+        # propagate any exception through the result queue
+        await result_queue.put((batch_idx, e))
+        raise
+
+
+async def _create_table_rows_generator(
+    *,
+    name: str,
+    prompt: str,
+    columns: dict[str, ColumnConfig],
+    foreign_keys: list[ForeignKeyConfig],
+    primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
     sample_size: int,
     previous_rows_size: int,
     non_context_size: int | None,
+    n_workers: int,
     llm_config: LLMConfig,
-) -> Generator[dict]:
+) -> AsyncGenerator[dict]:
+    batch_size = 20  # generate 20 root table rows at a time
+
     def supports_structured_outputs(model: str) -> bool:
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
-    def create_structured_output_schema(
-        columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
-    ) -> type[BaseModel]:
-        def create_annotation(column_config: ColumnConfig) -> type:
-            if column_config.values or column_config.dtype is DType.CATEGORY:
-                return Literal[tuple(column_config.values)]
-            return {
-                DType.INTEGER: int | None,
-                DType.FLOAT: float | None,
-                DType.STRING: str | None,
-                DType.BOOLEAN: bool | None,
-                # response_format has limited support for JSON Schema features
-                # thus we represent dates and datetimes as strings
-                DType.DATE: str | None,
-                DType.DATETIME: str | None,
-            }[column_config.dtype]
+    llm_output_format = LLMOutputFormat.JSON if supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
 
-        fields = {}
-        for column_name, column_config in columns.items():
-            if existing_data is not None and column_name in existing_data.columns:
-                continue  # skip columns that already exist in existing data
-            annotation = create_annotation(column_config)
-            fields[column_name] = (annotation, Field(...))
-        TableRow = create_model("TableRow", **fields)
-        TableRows = create_model("TableRows", rows=(list[TableRow], ...))
-        return TableRows
-
-    def yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
-        # starting with dirty buffer is to handle the `{"rows": []}` case
-        buffer = "garbage"
-        rows_json_started = False
-        in_row_json = False
-        for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta is None:
-                continue
-            for char in delta:
-                buffer += char
-                if char == "{" and not rows_json_started:
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    # *                                 <- start of rows json stream
-                    rows_json_started = True
-                elif char == "{" and not in_row_json:
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    #           *                       <- start of single row json stream
-                    buffer = "{"
-                    in_row_json = True
-                elif char == "}":
-                    # {"rows": [{"name": "Jo\}h\{n"}]}
-                    #                        *     * *  <- any of these
-                    try:
-                        row = json.loads(buffer)
-                        yield row
-                        buffer = ""
-                        in_row_json = False
-                    except json.JSONDecodeError:
-                        continue
-
-    def yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> Generator[dict]:
-        buffer = ""
-        header = None
-        for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta is None:
-                continue
-            for char in delta:
-                buffer += char
-                if char == "\n":
-                    row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
-                    if header is None:
-                        # column1,column2,column3\n
-                        #                        ** <- end of header row
-                        header = row
-                    else:
-                        # value_1,value_2,value_3\n
-                        #                        ** <- end of data row
-                        yield dict(zip(header, row))
-                    buffer = ""
-        if buffer:
-            # last row might not finish with a newline, in which case the buffer would not be empty here
-            last_row = pd.read_csv(StringIO(buffer), header=None).astype(str).iloc[0].to_list()
-            yield dict(zip(header, last_row))
-
-    def batched(data: pd.DataFrame, batch_size: int) -> Generator[pd.DataFrame]:
-        while True:
-            for i in range(0, len(data), batch_size):
-                yield data.iloc[i : i + batch_size]
-
-    def completion_with_retries(*args, **kwargs):
-        n_attempts = 3
-
-        def print_on_retry(_):
-            print(" * Calling LLM again... * ", end="", flush=True)
-
-        # try up to 3 times, print a message to the user on each retry
-        retryer = tenacity.Retrying(
-            stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
-        )
-        return retryer(litellm.completion, *args, **kwargs)
-
-    batch_size = 30  # generate 30 root table rows at a time
+    previous_rows = deque(maxlen=previous_rows_size)
 
     # derive data for augmentation
     existing_data: pd.DataFrame | None = None
@@ -549,12 +726,14 @@ def _create_table_rows_generator(
 
     # derive context data (if first foreign key is present) and harmonize sample size accordingly
     context_data: pd.DataFrame | None = None
+    context_batches: list[pd.DataFrame] | None = None
     if foreign_keys and foreign_keys[0].referenced_table != name:  # self-dependency is not considered as context
         context_table_name = foreign_keys[0].referenced_table
         assert context_table_name in data
         context_data = data[context_table_name]
         batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
+        context_batches = [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
@@ -567,42 +746,22 @@ def _create_table_rows_generator(
             assert non_context_table_name in data
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
-    litellm_kwargs = {
-        "temperature": llm_config.temperature,
-        "top_p": llm_config.top_p,
-        "model": llm_config.model,
-        "api_key": llm_config.api_key,
-        "stream": True,
-    }
+    # calculate batch_sizes
+    n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
+    batch_sizes = [batch_size] * n_total_batches
+    if context_batches is None:
+        # optimise the last batch size for flat tables
+        # +2 because LLM may not always count the rows correctly
+        batch_sizes[-1] = sample_size - sum(batch_sizes[:-1]) + 2
 
-    batch_idx = 0
-    yielded_sequences = 0
-    previous_rows = deque(maxlen=previous_rows_size)
-    context_batch_generator = batched(context_data, batch_size) if context_data is not None else itertools.repeat(None)
-    context_batch = None
-    do_repeat_previous_batch = False
-    n_retries = 0
-    llm_output_format = LLMOutputFormat.CSV
-    while True:  # iterate over batches
-        # pick next context batch or repeat the previous one
-        context_batch = context_batch if do_repeat_previous_batch else next(context_batch_generator)
-        n_retries += int(do_repeat_previous_batch)
-        do_repeat_previous_batch = False
+    # initialize queues for async communication
+    batch_queue = asyncio.PriorityQueue()
+    result_queue = asyncio.Queue()
+    retry_queue = asyncio.Queue()
 
-        # fallback to JSON with Structured Outputs if CSV generation fails too often
-        if (
-            llm_output_format == LLMOutputFormat.CSV
-            and supports_structured_outputs(model=llm_config.model)
-            and n_retries >= 3
-        ):
-            print(" * Falling back to JSON with Structured Outputs... * ", end="", flush=True)
-            llm_output_format = LLMOutputFormat.JSON
-
-        # raise error if generation is not stable
-        if n_retries >= 10:
-            raise RuntimeError(
-                "Too many malformed batches were generated. Consider changing the model in order to make generation more stable."
-            )
+    # populate batch queue
+    for batch_idx in range(n_total_batches):
+        context_batch = context_batches[batch_idx] if context_batches is not None else None
 
         # pick existing rows for current batch
         existing_batch: pd.DataFrame | None = None
@@ -620,11 +779,6 @@ def _create_table_rows_generator(
             if existing_batch.empty:
                 existing_batch = None
 
-        # resolve columns to generate
-        generated_columns = set(columns.keys())
-        if existing_batch is not None:
-            generated_columns = generated_columns - set(existing_batch.columns)
-
         # sample candidate rows from non-context tables for current batch
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
@@ -632,103 +786,94 @@ def _create_table_rows_generator(
                 table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
             }
 
-        if context_batch is None:
-            # for root tables, scale down batch size in order to prevent excessive generations
-            remaining_rows = sample_size - yielded_sequences
-            if batch_size >= remaining_rows:
-                batch_size = remaining_rows + 2  # +2 because LLM may not always count the rows correctly
+        task = {
+            "batch_size": batch_sizes[batch_idx],
+            "existing_batch": existing_batch,
+            "context_batch": context_batch,
+            "non_context_batch": non_context_batch,
+        }
+        await batch_queue.put((batch_idx, task))
 
-        structured_output_schema = None
-        if llm_output_format == LLMOutputFormat.JSON:
-            structured_output_schema = create_structured_output_schema(columns=columns, existing_data=existing_batch)
-
-        system_prompt = _create_system_prompt(llm_output_format)
-        user_prompt = _create_table_prompt(
-            name=name,
-            prompt=prompt,
-            columns=columns,
-            primary_keys=primary_keys,
-            batch_size=batch_size,
-            foreign_keys=foreign_keys,
-            existing_data=existing_batch,
-            context_data=context_batch,
-            non_context_data=non_context_batch,
-            previous_rows=list(previous_rows),
-            llm_output_format=llm_output_format,
-        )
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-
-        if len(generated_columns) > 0:
-            response = completion_with_retries(
-                messages=messages, response_format=structured_output_schema, **litellm_kwargs
+    # initialize workers
+    n_workers = min(n_total_batches, n_workers)
+    workers = [
+        asyncio.create_task(
+            _worker(
+                name=name,
+                prompt=prompt,
+                columns=columns,
+                foreign_keys=foreign_keys,
+                primary_keys=primary_keys,
+                previous_rows=previous_rows,
+                batch_queue=batch_queue,
+                result_queue=result_queue,
+                retry_queue=retry_queue,
+                n_workers=n_workers,
+                llm_output_format=llm_output_format,
+                llm_config=llm_config,
             )
-            yield_rows_from_chunks_stream = {
-                LLMOutputFormat.JSON: yield_rows_from_json_chunks_stream,
-                LLMOutputFormat.CSV: yield_rows_from_csv_chunks_stream,
-            }[llm_output_format]
-            rows_stream = yield_rows_from_chunks_stream(response)
-        else:
-            # skip roundtrip to LLM in case all columns are provided in existing data
-            rows_stream = itertools.repeat({})
+        )
+        for _ in range(n_workers)
+    ]
 
-        # we first generate all rows in the batch, in order to run consistency checks
-        rows_generated_part = []
-        for row_generated_part in rows_stream:
-            # remove internal columns, if exist
-            row_generated_part = {k: v for k, v in row_generated_part.items() if k in generated_columns}
-
-            if set(row_generated_part.keys()) != generated_columns:
-                if context_batch is not None or existing_batch is not None:
-                    # in case of linked tables and data enrichment, it's critical that all rows have expected columns
-                    print(" * Malformed row, repeating batch... * ", end="", flush=True)
-                    do_repeat_previous_batch = True
-                    break
-                else:
-                    # in case of flat tables generation, each row is independent, therefore we only skip the invalid row
-                    continue
-            rows_generated_part.append(row_generated_part)
-
-        # in case of data enrichment, check that all rows were completed successfully
-        if existing_batch is not None and len(rows_generated_part) != len(existing_batch):
-            print(" * Some rows were not enriched successfully, repeating batch... * ", end="", flush=True)
-            do_repeat_previous_batch = True
-            break
-
-        # collapse existing and generated parts into coherent rows
-        rows = []
-        for row_idx, row_generated_part in enumerate(rows_generated_part):
-            row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
-            row = {**row_generated_part, **row_existing_part}
-            # keep columns order according to user's spec
-            row = {column: row[column] for column in columns.keys()}
-            rows.append(row)
-
-        # yield rows one by one only once the whole batch is generated and checked for consistency
+    n_completed_batches = 0
+    n_yielded_sequences = 0
+    while n_yielded_sequences < sample_size:
+        if n_completed_batches >= n_total_batches:
+            assert context_data is None, "n_total_batches is fixed for linked tables"
+            assert existing_data is None, "n_total_batches is fixed for data enrichment"
+            # LLMs may not generate exactly the number of rows requested
+            # in case of flat tables, we still accept such incomplete batches,
+            # but that means we may need to generate more batches to reach the sample size
+            # +2 because LLM may not always count the rows correctly
+            n_total_batches += 1
+            task = {
+                "batch_size": sample_size - n_yielded_sequences + 2,
+            }
+            await batch_queue.put((n_total_batches, task))
+        batch_idx, result = await result_queue.get()
+        if isinstance(result, Exception):
+            # if an exception is raised by any worker, cancel all workers and raise that exception
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers)
+            raise result
+        rows = result
         for row_idx, row in enumerate(rows):
-            yield row
-            if context_batch is None or row_idx == len(rows) - 1:
+            yield (batch_idx, row)
+            if context_batches is None or row_idx == len(rows) - 1:
                 # in case of flat table, each row is considered a single sequence
                 # in case of linked table, all rows are considered a single sequence
                 # NOTE: this assumes that we generate a single sequence per batch
-                yielded_sequences += 1
-            if yielded_sequences >= sample_size:
-                return  # move to next table
+                n_yielded_sequences += 1
+            if n_yielded_sequences >= sample_size:
+                break
+        n_completed_batches += 1
+        result_queue.task_done()
 
-        if do_repeat_previous_batch:
-            continue
+    # gracefully shutdown workers
+    await batch_queue.join()
+    for _ in workers:
+        await batch_queue.put((n_total_batches + 1, None))
+    await asyncio.gather(*workers)
 
-        previous_rows.extend(rows)
-        batch_idx += 1
 
-
-def _convert_table_rows_generator_to_df(
-    table_rows_generator: Generator[dict],
+async def _convert_table_rows_generator_to_df(
+    table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
 ) -> pd.DataFrame:
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
+        df = df.copy()
         for column_name, column_config in columns.items():
             if column_config.dtype in [DType.DATE, DType.DATETIME]:
-                df[column_name] = pd.to_datetime(df[column_name], errors="coerce")
+
+                def harmonize_datetime(x):
+                    try:
+                        return dateutil.parser.parse(x)
+                    except Exception:
+                        return pd.NaT
+
+                df[column_name] = pd.to_datetime(df[column_name].apply(harmonize_datetime), errors="coerce")
             elif column_config.dtype is DType.INTEGER:
                 df[column_name] = pd.to_numeric(df[column_name], errors="coerce", downcast="integer").astype(
                     "int64[pyarrow]"
@@ -745,7 +890,13 @@ def _convert_table_rows_generator_to_df(
                 df[column_name] = df[column_name].astype("string[pyarrow]")
         return df
 
-    df = pd.DataFrame(list(table_rows_generator))
+    # consume entire generator
+    items = [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator]
+    # sort items by batch_idx to maintain order (relevant especially for keeping the order of existing data)
+    items = sorted(items, key=lambda x: x["batch_idx"])
+    # extract rows and convert to DataFrame
+    rows = [item["row"] for item in items]
+    df = pd.DataFrame(rows)
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
@@ -850,6 +1001,7 @@ def sample(
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
+    n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
@@ -886,6 +1038,8 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
+        n_workers (int): The number of concurrent workers making the LLM calls. Default is 10.
+            If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
 
     Returns:
@@ -1080,18 +1234,23 @@ def sample(
 
     for table_name in execution_plan:
         table_config = config.root[table_name]
-        df = _sample_table(
-            name=table_name,
-            prompt=table_config.prompt,
-            columns=table_config.columns,
-            foreign_keys=table_config.foreign_keys,
-            primary_keys=primary_keys,
-            data=data,
-            sample_size=sample_size[table_name],
-            previous_rows_size=10,  # present 10 previously generated rows to the LLM
-            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-            llm_config=llm_config,
-        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _sample_table_sync,
+                name=table_name,
+                prompt=table_config.prompt,
+                columns=table_config.columns,
+                foreign_keys=table_config.foreign_keys,
+                primary_keys=primary_keys,
+                data=data,
+                sample_size=sample_size[table_name],
+                previous_rows_size=10,  # present 10 previously generated rows to the LLM
+                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+                n_workers=n_workers,
+                llm_config=llm_config,
+            )
+            df = future.result()
         data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
