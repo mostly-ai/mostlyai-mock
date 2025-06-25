@@ -509,11 +509,6 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         yield dict(zip(header, last_row))
 
 
-async def _yield_empty_rows(n_rows: int) -> AsyncGenerator[dict]:
-    for _ in range(n_rows):
-        yield {}
-
-
 def _create_structured_output_schema(
     columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
 ) -> type[BaseModel]:
@@ -540,15 +535,6 @@ def _create_structured_output_schema(
     TableRow = create_model("TableRow", **fields)
     TableRows = create_model("TableRows", rows=(list[TableRow], ...))
     return TableRows
-
-
-def _supports_structured_outputs(model: str) -> bool:
-    supported_params = litellm.get_supported_openai_params(model=model) or []
-    return "response_format" in supported_params and litellm.supports_response_schema(model)
-
-
-def _batched(data: pd.DataFrame, batch_size: int) -> list[pd.DataFrame]:
-    return [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
 
 
 async def _worker(
@@ -621,7 +607,7 @@ async def _worker(
             )
             messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
-            if len(generated_columns) > 0:
+            if generated_columns:
                 # make LLM call
                 response = await _completion_with_retries(
                     messages=messages, response_format=structured_output_schema, **litellm_kwargs
@@ -634,6 +620,11 @@ async def _worker(
             else:
                 # skip roundtrip to LLM in case all columns are provided in existing data
                 assert existing_batch is not None
+
+                async def _yield_empty_rows(n_rows: int) -> AsyncGenerator[dict]:
+                    for _ in range(n_rows):
+                        yield {}
+
                 rows_stream = _yield_empty_rows(len(existing_batch))
 
             # we first generate all rows in the batch, in order to run consistency checks
@@ -718,7 +709,11 @@ async def _create_table_rows_generator(
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
-    llm_output_format = LLMOutputFormat.JSON if _supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
+    def supports_structured_outputs(model: str) -> bool:
+        supported_params = litellm.get_supported_openai_params(model=model) or []
+        return "response_format" in supported_params and litellm.supports_response_schema(model)
+
+    llm_output_format = LLMOutputFormat.JSON if supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
 
     previous_rows = deque(maxlen=previous_rows_size)
 
@@ -738,7 +733,7 @@ async def _create_table_rows_generator(
         context_data = data[context_table_name]
         batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
-        context_batches = _batched(context_data, batch_size)
+        context_batches = [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
