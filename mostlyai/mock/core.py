@@ -832,6 +832,12 @@ async def _create_table_rows_generator(
             api_key=llm_config.api_key,
         )
         llm_config.model = llm_config.model[len("openrouter/") :]
+    elif llm_config.model.startswith("proxy/"):
+        openai_client = AsyncOpenAI(
+            base_url="http://localhost:8000/v1",
+            api_key=llm_config.api_key,
+        )
+        llm_config.model = llm_config.model[len("proxy/") :]
     else:
         openai_client = None
 
