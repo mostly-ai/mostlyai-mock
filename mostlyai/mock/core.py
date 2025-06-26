@@ -1252,7 +1252,10 @@ def sample(
     for table_name in execution_plan:
         table_config = config.root[table_name]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
+        # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
+        # a new process is spawned for each call to `_sample_table`
+        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 _sample_table_sync,
                 name=table_name,
