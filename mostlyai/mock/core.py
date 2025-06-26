@@ -449,6 +449,13 @@ def _completion_with_retries(*args, **kwargs):
 
 
 async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    def buffer_to_row(buffer: list[str]) -> list[str]:
+        try:
+            return json.loads("".join(buffer))
+        except Exception:
+            # in case of any error, return empty row, which would later result in batch rejection
+            return []
+
     # starting with dirty buffer is to handle the `{"rows": []}` case
     buffer = list("garbage")
     rows_json_started = False
@@ -471,18 +478,19 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
             elif char == "}":
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #                        *     * *  <- any of these
-                try:
-                    row = json.loads("".join(buffer))
-                    yield row
-                    buffer = list()
-                    in_row_json = False
-                except json.JSONDecodeError:
-                    continue
+                row = buffer_to_row(buffer)
+                yield row
+                buffer = list()
+                in_row_json = False
 
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
     def buffer_to_row(buffer: list[str]) -> list[str]:
-        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+        try:
+            return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
+        except Exception:
+            # in case of any error, return empty row, which would later result in batch rejection
+            return []
 
     buffer = list()
     header = None
@@ -710,6 +718,7 @@ async def _create_table_rows_generator(
     batch_size = 20  # generate 20 root table rows at a time
 
     def supports_structured_outputs(model: str) -> bool:
+        model = model.removeprefix("litellm_proxy/")
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
