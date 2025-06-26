@@ -450,11 +450,7 @@ def _completion_with_retries(*args, **kwargs):
 
 async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
     def buffer_to_row(buffer: list[str]) -> dict:
-        try:
-            return json.loads("".join(buffer))
-        except Exception:
-            # in case of any error, return empty row, which would later result in batch rejection
-            return {}
+        return json.loads("".join(buffer))
 
     # starting with dirty buffer is to handle the `{"rows": []}` case
     buffer = list("garbage")
@@ -478,19 +474,20 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
             elif char == "}":
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #                        *     * *  <- any of these
-                row = buffer_to_row(buffer)
+                try:
+                    row = buffer_to_row(buffer)
+                except Exception:
+                    # in case of any error, silently drop the row
+                    continue
+                finally:
+                    buffer = list()
+                    in_row_json = False
                 yield row
-                buffer = list()
-                in_row_json = False
 
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-    def buffer_to_row(buffer: list[str]) -> dict:
-        try:
-            return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
-        except Exception:
-            # in case of any error, return empty row, which would later result in batch rejection
-            return {}
+    def buffer_to_row(buffer: list[str]) -> list[str]:
+        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
 
     buffer = list()
     header = None
@@ -501,7 +498,13 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         for char in delta:
             buffer.append(char)
             if char == "\n":
-                row = buffer_to_row(buffer)
+                try:
+                    row = buffer_to_row(buffer)
+                except Exception:
+                    # in case of any error, silently drop the row
+                    continue
+                finally:
+                    buffer = list()
                 if header is None:
                     # column1,column2,column3\n
                     #                        ** <- end of header row
@@ -510,11 +513,14 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
                     # value_1,value_2,value_3\n
                     #                        ** <- end of data row
                     yield dict(zip(header, row))
-                buffer = list()
     if buffer:
         # last row might not finish with a newline, in which case the buffer would not be empty here
-        last_row = buffer_to_row(buffer)
-        yield dict(zip(header, last_row))
+        try:
+            last_row = buffer_to_row(buffer)
+            yield dict(zip(header, last_row))
+        except Exception:
+            # in case of any error, silently drop the row
+            pass
 
 
 def _create_structured_output_schema(
