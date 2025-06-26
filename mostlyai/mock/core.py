@@ -748,7 +748,7 @@ async def _create_table_rows_generator(
         context_data = data[context_table_name]
         batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
-        context_batches = [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
+        context_batches = [context_data.iloc[i : i + batch_size] for i in range(0, len(context_data), batch_size)]
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
