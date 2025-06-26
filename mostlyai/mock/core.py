@@ -450,6 +450,9 @@ def _completion_with_retries(*args, **kwargs):
 
 
 async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+    def buffer_to_row(buffer: list[str]) -> dict:
+        return json.loads("".join(buffer))
+
     # starting with dirty buffer is to handle the `{"rows": []}` case
     buffer = list("garbage")
     rows_json_started = False
@@ -473,12 +476,14 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #                        *     * *  <- any of these
                 try:
-                    row = json.loads("".join(buffer))
-                    yield row
+                    row = buffer_to_row(buffer)
+                except Exception:
+                    # in case of any error, silently drop the row
+                    continue
+                finally:
                     buffer = list()
                     in_row_json = False
-                except json.JSONDecodeError:
-                    continue
+                yield row
 
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
@@ -499,7 +504,13 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         for char in delta:
             buffer.append(char)
             if char == "\n":
-                row = buffer_to_row(buffer)
+                try:
+                    row = buffer_to_row(buffer)
+                except Exception:
+                    # in case of any error, silently drop the row
+                    continue
+                finally:
+                    buffer = list()
                 if header is None:
                     # column1,column2,column3\n
                     #                        ** <- end of header row
@@ -508,11 +519,14 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
                     # value_1,value_2,value_3\n
                     #                        ** <- end of data row
                     yield dict(zip(header, row))
-                buffer = list()
     if buffer:
         # last row might not finish with a newline, in which case the buffer would not be empty here
-        last_row = buffer_to_row(buffer)
-        yield dict(zip(header, last_row))
+        try:
+            last_row = buffer_to_row(buffer)
+            yield dict(zip(header, last_row))
+        except Exception:
+            # in case of any error, silently drop the row
+            pass
 
 
 def _create_structured_output_schema(
@@ -740,6 +754,7 @@ async def _create_table_rows_generator(
     batch_size = 20  # generate 20 root table rows at a time
 
     def supports_structured_outputs(model: str) -> bool:
+        model = model.removeprefix("litellm_proxy/")
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
@@ -764,7 +779,7 @@ async def _create_table_rows_generator(
         context_data = data[context_table_name]
         batch_size = 1  # generate 1 sequence at a time
         sample_size = len(context_data)
-        context_batches = [data.iloc[i : i + batch_size] for i in range(0, len(data), batch_size)]
+        context_batches = [context_data.iloc[i : i + batch_size] for i in range(0, len(context_data), batch_size)]
 
     # derive non-context data (if more than one foreign key is present)
     non_context_data: dict[str, pd.DataFrame] = {}
@@ -1285,7 +1300,10 @@ def sample(
     for table_name in execution_plan:
         table_config = config.root[table_name]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
+        # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
+        # a new process is spawned for each call to `_sample_table`
+        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 _sample_table_sync,
                 name=table_name,
