@@ -488,12 +488,7 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
     def buffer_to_row(buffer: list[str]) -> list[str]:
-        # TEMPORARY: more robust CSV parsing; probably good idea to have this on main too
-        try:
-            return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
-        except Exception as e:
-            print(f"Error parsing CSV: {e}")
-            return []
+        return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
 
     buffer = list()
     header = None
