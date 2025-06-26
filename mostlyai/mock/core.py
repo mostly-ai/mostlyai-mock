@@ -449,12 +449,12 @@ def _completion_with_retries(*args, **kwargs):
 
 
 async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-    def buffer_to_row(buffer: list[str]) -> list[str]:
+    def buffer_to_row(buffer: list[str]) -> dict:
         try:
             return json.loads("".join(buffer))
         except Exception:
             # in case of any error, return empty row, which would later result in batch rejection
-            return []
+            return {}
 
     # starting with dirty buffer is to handle the `{"rows": []}` case
     buffer = list("garbage")
@@ -485,12 +485,12 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
 
 
 async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
-    def buffer_to_row(buffer: list[str]) -> list[str]:
+    def buffer_to_row(buffer: list[str]) -> dict:
         try:
             return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
         except Exception:
             # in case of any error, return empty row, which would later result in batch rejection
-            return []
+            return {}
 
     buffer = list()
     header = None
