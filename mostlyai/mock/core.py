@@ -28,6 +28,7 @@ import dateutil.parser
 import litellm
 import pandas as pd
 import tenacity
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
 from tqdm.asyncio import tqdm
 
@@ -565,6 +566,7 @@ async def _worker(
     n_workers: int,
     llm_output_format: LLMOutputFormat,
     llm_config: LLMConfig,
+    openai_client: AsyncOpenAI | None,
 ):
     try:
         while True:
@@ -595,14 +597,18 @@ async def _worker(
                     columns=columns, existing_data=existing_batch
                 )
 
-            # construct litellm kwargs
-            litellm_kwargs = {
-                "temperature": llm_config.temperature,
-                "top_p": llm_config.top_p,
-                "model": llm_config.model,
-                "api_key": llm_config.api_key,
-                "stream": True,
-            }
+            # TEMPORARY: LiteLLM and OpenAI treat response_format differently
+            if structured_output_schema:
+                response_format = (
+                    structured_output_schema
+                    if openai_client is None
+                    else {
+                        "type": "json_schema",
+                        "schema": structured_output_schema.model_json_schema(),
+                    }
+                )
+            else:
+                response_format = None
 
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
@@ -623,9 +629,28 @@ async def _worker(
 
             if generated_columns:
                 # make LLM call
-                response = await _completion_with_retries(
-                    messages=messages, response_format=structured_output_schema, **litellm_kwargs
-                )
+                # TEMPORARY: support both LiteLLM and OpenRouter (through OpenAI client)
+                if openai_client is None:
+                    # make LLM call with LiteLLM
+                    response = await _completion_with_retries(
+                        messages=messages,
+                        response_format=response_format,
+                        temperature=llm_config.temperature,
+                        top_p=llm_config.top_p,
+                        model=llm_config.model,
+                        api_key=llm_config.api_key,
+                        stream=True,
+                    )
+                else:
+                    # make LLM call with OpenAI client (OpenRouter)
+                    response = await openai_client.chat.completions.create(
+                        messages=messages,
+                        response_format=None,  # TEMPORARY: if Structured Outputs are used, Cerebras is not selected as a provider
+                        temperature=llm_config.temperature,
+                        top_p=llm_config.top_p,
+                        model=llm_config.model,
+                        stream=True,
+                    )
                 yield_rows_from_chunks_stream = {
                     LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
                     LLMOutputFormat.CSV: _yield_rows_from_csv_chunks_stream,
@@ -728,7 +753,8 @@ async def _create_table_rows_generator(
         supported_params = litellm.get_supported_openai_params(model=model) or []
         return "response_format" in supported_params and litellm.supports_response_schema(model)
 
-    llm_output_format = LLMOutputFormat.JSON if supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
+    # TEMPORARY: always use CSV output in this branch
+    llm_output_format = LLMOutputFormat.CSV
 
     previous_rows = deque(maxlen=previous_rows_size)
 
@@ -809,6 +835,22 @@ async def _create_table_rows_generator(
         }
         await batch_queue.put((batch_idx, task))
 
+    # TEMPORARY: use OpenRouter for all models that start with "openrouter/"; trim the prefix
+    if llm_config.model.startswith("openrouter/"):
+        openai_client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=llm_config.api_key,
+        )
+        llm_config.model = llm_config.model[len("openrouter/") :]
+    elif llm_config.model.startswith("proxy/"):
+        openai_client = AsyncOpenAI(
+            base_url="http://localhost:8000/v1",
+            api_key=llm_config.api_key,
+        )
+        llm_config.model = llm_config.model[len("proxy/") :]
+    else:
+        openai_client = None
+
     # initialize workers
     n_workers = min(n_total_batches, n_workers)
     workers = [
@@ -826,6 +868,7 @@ async def _create_table_rows_generator(
                 n_workers=n_workers,
                 llm_output_format=llm_output_format,
                 llm_config=llm_config,
+                openai_client=openai_client,
             )
         )
         for _ in range(n_workers)
