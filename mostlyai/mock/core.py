@@ -225,12 +225,7 @@ async def _sample_table(
 
 
 def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_sample_table(*args, **kwargs))
-    finally:
-        loop.close()
+    return asyncio.run(_sample_table(*args, **kwargs))
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
@@ -1249,13 +1244,13 @@ def sample(
 
     data: dict[str, pd.DataFrame] = existing_data or {}
 
-    for table_name in execution_plan:
-        table_config = config.root[table_name]
-
-        # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
-        # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
-        # a new process is spawned for each call to `_sample_table`
-        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+    # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
+    # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
+    # a new thread is spawned for each call to `_sample_table`
+    # NOTE: initialize executor only once, doing that inside the loop might lead to deadlocks
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        for table_name in execution_plan:
+            table_config = config.root[table_name]
             future = executor.submit(
                 _sample_table_sync,
                 name=table_name,
@@ -1271,6 +1266,6 @@ def sample(
                 llm_config=llm_config,
             )
             df = future.result()
-        data[table_name] = df
+            data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
