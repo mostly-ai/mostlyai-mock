@@ -113,6 +113,27 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
         return self
 
+    def get_dependency_mappings(self) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+        child_to_parents = {}
+        parent_to_children = {}
+
+        for table_name in self.root:
+            child_to_parents[table_name] = set()
+            parent_to_children[table_name] = set()
+
+        for table_name, table_config in self.root.items():
+            if table_config.foreign_keys:
+                for fk in table_config.foreign_keys:
+                    referenced_table = fk.referenced_table
+                    child_to_parents[table_name].add(referenced_table)
+                    parent_to_children[referenced_table].add(table_name)
+
+        root_tables = []
+        for table_name, parents in child_to_parents.items():
+            if not parents or parents == {table_name}:  # no dependencies or only self-dependency
+                root_tables.append(table_name)
+        return child_to_parents, parent_to_children, root_tables
+
 
 class TableConfig(BaseModel):
     prompt: str = ""
@@ -200,7 +221,7 @@ async def _sample_table(
     foreign_keys: list[ForeignKeyConfig],
     primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
-    sample_size: int,
+    sample_size: int | None,
     previous_rows_size: int,
     non_context_size: int | None,
     n_workers: int,
@@ -225,12 +246,7 @@ async def _sample_table(
 
 
 def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_sample_table(*args, **kwargs))
-    finally:
-        loop.close()
+    return asyncio.run(_sample_table(*args, **kwargs))
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
@@ -715,7 +731,7 @@ async def _create_table_rows_generator(
     foreign_keys: list[ForeignKeyConfig],
     primary_keys: dict[str, str],
     data: dict[str, pd.DataFrame],
-    sample_size: int,
+    sample_size: int | None,
     previous_rows_size: int,
     non_context_size: int | None,
     n_workers: int,
@@ -762,6 +778,7 @@ async def _create_table_rows_generator(
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
     # calculate batch_sizes
+    assert sample_size is not None, "sample_size should have been filled by this point"
     n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
     batch_sizes = [batch_size] * n_total_batches
     if context_batches is None:
@@ -947,37 +964,23 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
 
 
 def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig) -> dict[str, int]:
-    if isinstance(sample_size, int):
-        return {table_name: sample_size for table_name in config.root}
+    _, _, root_tables = config.get_dependency_mappings()
 
-    if sample_size.keys() != config.root.keys():
-        raise ValueError(f"Sample size keys must match table names: {sample_size.keys()} != {config.root.keys()}")
+    if isinstance(sample_size, int):
+        sample_size = {table_name: sample_size for table_name in root_tables}
+
+    for table_name in root_tables:
+        if table_name not in sample_size or sample_size[table_name] is None:
+            # set default sample size for missing or None sample sizes
+            sample_size[table_name] = 4
+        # clamp sample_size to [1, inf)
+        sample_size[table_name] = max(1, sample_size[table_name])
+
     return sample_size
 
 
 def _build_execution_plan(config: MockConfig) -> list[str]:
-    def build_dependency_mappings(config: MockConfig) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
-        child_to_parents = {}
-        parent_to_children = {}
-
-        for table_name in config.root:
-            child_to_parents[table_name] = set()
-            parent_to_children[table_name] = set()
-
-        for table_name, table_config in config.root.items():
-            if table_config.foreign_keys:
-                for fk in table_config.foreign_keys:
-                    referenced_table = fk.referenced_table
-                    child_to_parents[table_name].add(referenced_table)
-                    parent_to_children[referenced_table].add(table_name)
-
-        root_tables = []
-        for table_name, parents in child_to_parents.items():
-            if not parents or parents == {table_name}:  # no dependencies or only self-dependency
-                root_tables.append(table_name)
-        return child_to_parents, parent_to_children, root_tables
-
-    child_to_parents, parent_to_children, root_tables = build_dependency_mappings(config)
+    child_to_parents, parent_to_children, root_tables = config.get_dependency_mappings()
 
     execution_plan = []
     bfs_queue = list(root_tables)
@@ -1035,7 +1038,7 @@ def sample(
         sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
             If a single integer is provided, the same number of rows will be generated for each subject table.
             If a dictionary is provided, the number of rows to generate for each subject table can be specified individually.
-            Default is 4. Ignored if existing_data is provided.
+            Default is 4. Ignored if existing_data is provided. Ignored for non-root tables.
             If a table has a foreign key, the sample size is determined by the corresponding foreign key prompt. If nothing specified, a few rows per parent record are generated.
         existing_data (dict[str, pd.DataFrame] | None): Existing data to augment. If provided, the sample_size argument is ignored.
             Default is None.
@@ -1249,13 +1252,13 @@ def sample(
 
     data: dict[str, pd.DataFrame] = existing_data or {}
 
-    for table_name in execution_plan:
-        table_config = config.root[table_name]
-
-        # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
-        # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
-        # a new process is spawned for each call to `_sample_table`
-        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+    # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
+    # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
+    # a new thread is spawned for each call to `_sample_table`
+    # NOTE: initialize executor only once, doing that inside the loop might lead to deadlocks
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        for table_name in execution_plan:
+            table_config = config.root[table_name]
             future = executor.submit(
                 _sample_table_sync,
                 name=table_name,
@@ -1264,13 +1267,13 @@ def sample(
                 foreign_keys=table_config.foreign_keys,
                 primary_keys=primary_keys,
                 data=data,
-                sample_size=sample_size[table_name],
+                sample_size=sample_size.get(table_name),
                 previous_rows_size=10,  # present 10 previously generated rows to the LLM
                 non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
                 n_workers=n_workers,
                 llm_config=llm_config,
             )
             df = future.result()
-        data[table_name] = df
+            data[table_name] = df
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
