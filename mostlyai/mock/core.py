@@ -544,7 +544,7 @@ def _create_structured_output_schema(
 ) -> type[BaseModel]:
     def create_annotation(column_config: ColumnConfig) -> type:
         if column_config.values or column_config.dtype is DType.CATEGORY:
-            return Literal[tuple(column_config.values)]
+            return Literal[tuple(column_config.values)]  # type: ignore
         return {
             DType.INTEGER: int | None,
             DType.FLOAT: float | None,
