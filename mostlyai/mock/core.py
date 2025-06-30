@@ -113,6 +113,27 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
         return self
 
+    @model_validator(mode="after")
+    def ensure_values_are_not_provided_for_primary_key(self) -> MockConfig:
+        for table_name, table_config in self.root.items():
+            for column_name, column_config in table_config.columns.items():
+                if column_name == table_config.primary_key and column_config.values:
+                    raise ValueError(
+                        f"Values cannot be provided for primary key column '{column_name}' in table '{table_name}'"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
+        for table_name, table_config in self.root.items():
+            if table_config.primary_key:
+                column_config = table_config.columns[table_config.primary_key]
+                if column_config.dtype != DType.STRING:
+                    raise ValueError(
+                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be of type 'string'"
+                    )
+        return self
+
     def get_dependency_mappings(self) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
         child_to_parents = {}
         parent_to_children = {}
@@ -279,7 +300,9 @@ def _create_table_prompt(
     prompt: str,
     columns: dict[str, ColumnConfig],
     primary_keys: dict[str, str],
+    batch_idx: int,
     batch_size: int | None,
+    n_workers: int,
     foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
@@ -389,6 +412,9 @@ def _create_table_prompt(
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
+
+    if primary_keys[name] is not None and n_workers > 1:
+        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}_'\n\n"
 
     if has_context_table_section:
         assert foreign_keys
@@ -626,8 +652,10 @@ async def _worker(
                 name=name,
                 prompt=prompt,
                 columns=columns,
-                primary_keys=primary_keys,
+                batch_idx=batch_idx,
                 batch_size=batch_size,
+                n_workers=n_workers,
+                primary_keys=primary_keys,
                 foreign_keys=foreign_keys,
                 existing_data=existing_batch,
                 context_data=context_batch,
