@@ -1154,7 +1154,7 @@ def sample(
         "customers": {
             "prompt": "Customers of a hardware store",
             "columns": {
-                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
             "primary_key": "customer_id",  # single string; no composite keys allowed
@@ -1162,7 +1162,7 @@ def sample(
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
             "columns": {
-                "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
+                "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "string"},
                 "name": {"prompt": "the name of the warehouse", "dtype": "string"},
             },
             "primary_key": "warehouse_id",
@@ -1170,8 +1170,8 @@ def sample(
         "orders": {
             "prompt": "Orders of a Customer",
             "columns": {
-                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
-                "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
+                "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "string"},
                 "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
                 "text": {"prompt": "order text description", "dtype": "string"},
                 "amount": {"prompt": "order amount in USD", "dtype": "float"},
@@ -1249,7 +1249,7 @@ def sample(
         "customers": {
             "prompt": "Customers of a hardware store",
             "columns": {
-                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
                 "email": {"prompt": "email address of the customer", "dtype": "string"},
                 "phone": {"prompt": "phone number of the customer", "dtype": "string"},
@@ -1261,7 +1261,7 @@ def sample(
             "prompt": "Orders of a Customer",
             "columns": {
                 "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
-                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
                 "order_date": {"prompt": "the date when the order was placed", "dtype": "date"},
                 "total_amount": {"prompt": "order amount in USD", "dtype": "float"},
                 "status": {"dtype": "category", "values": ["pending", "shipped", "delivered", "cancelled"]},
