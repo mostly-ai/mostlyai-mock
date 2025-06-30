@@ -302,7 +302,6 @@ def _create_table_prompt(
     primary_keys: dict[str, str],
     batch_idx: int,
     batch_size: int | None,
-    n_workers: int,
     foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
     context_data: pd.DataFrame | None,
@@ -413,7 +412,7 @@ def _create_table_prompt(
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
-    if primary_keys[name] is not None and n_workers > 1:
+    if primary_keys[name] is not None:
         prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}_'\n\n"
 
     if has_context_table_section:
@@ -654,7 +653,6 @@ async def _worker(
                 columns=columns,
                 batch_idx=batch_idx,
                 batch_size=batch_size,
-                n_workers=n_workers,
                 primary_keys=primary_keys,
                 foreign_keys=foreign_keys,
                 existing_data=existing_batch,
