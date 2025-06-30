@@ -413,7 +413,9 @@ def _create_table_prompt(
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
     if primary_keys[name] is not None:
-        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}_'\n\n"
+        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}_'."
+        prompt += " There is one exception: if primary keys are in existing data, don't add prefix to them."
+        prompt += "\n\n"
 
     if has_context_table_section:
         assert foreign_keys
