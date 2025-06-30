@@ -1032,7 +1032,8 @@ def _harmonize_existing_data(
                 raise ValueError(
                     f"Coercion of column '{existing_column}' in existing data resulted in data loss. Ensure that the existing data is consistent with the mock configuration."
                 )
-            # TODO: check that the values are consistent with the mock configuration
+            # TODO 1: check that the values are consistent with allowed values from column config
+            # TODO 2: check that primary keys are unique
             existing_table[existing_column] = coerced_series
 
     return existing_data
