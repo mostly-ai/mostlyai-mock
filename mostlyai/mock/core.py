@@ -40,10 +40,10 @@ class LLMOutputFormat(str, Enum):
 
 
 class LLMConfig(BaseModel):
-    model: str = "openai/gpt-4.1-nano"
-    api_key: str | None = None
-    temperature: float = 1.0
-    top_p: float = 0.95
+    model: str
+    api_key: str | None
+    temperature: float
+    top_p: float
 
 
 class MockConfig(RootModel[dict[str, "TableConfig"]]):
@@ -250,8 +250,7 @@ def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
-    return f"""
-You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
+    return f"""You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
 
 Your task is to:
 
@@ -270,7 +269,7 @@ across tables.
 
 When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
 to generate compatible and realistic values for the missing columns.
-"""
+"""  # If you do not add to this prompt, the ending newline should be removed.
 
 
 def _create_table_prompt(
@@ -544,7 +543,7 @@ def _create_structured_output_schema(
 ) -> type[BaseModel]:
     def create_annotation(column_config: ColumnConfig) -> type:
         if column_config.values or column_config.dtype is DType.CATEGORY:
-            return Literal[tuple(column_config.values)]
+            return Literal[tuple(column_config.values)]  # type: ignore
         return {
             DType.INTEGER: int | None,
             DType.FLOAT: float | None,
@@ -687,7 +686,7 @@ async def _worker(
             if do_repeat_task:
                 # allow 10 retries across all workers before propagating the exception to the orchestrator
                 await retry_queue.put(1)
-                if retry_queue.qsize() < 10:
+                if retry_queue.qsize() <= 10:
                     # put task back to the front of the batch queue
                     await batch_queue.put((batch_idx, task))
                 else:
