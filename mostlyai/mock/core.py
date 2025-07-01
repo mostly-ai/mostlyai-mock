@@ -81,8 +81,8 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
-                        f"Column '{fk.column}' type '{fk_field.dtype}' does not match "
-                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.dtype}'"
+                        f"Column '{fk.column}' type '{fk_field.dtype.value}' does not match "
+                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.dtype.value}'"
                     )
 
         return tables
@@ -124,13 +124,13 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         return self
 
     @model_validator(mode="after")
-    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
+    def ensure_primary_key_is_string_or_integer_dtype(self) -> MockConfig:
         for table_name, table_config in self.root.items():
             if table_config.primary_key:
                 column_config = table_config.columns[table_config.primary_key]
-                if column_config.dtype != DType.STRING:
+                if column_config.dtype not in [DType.STRING, DType.INTEGER]:
                     raise ValueError(
-                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be of type 'string'"
+                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types: {[DType.STRING.value, DType.INTEGER.value]}"
                     )
         return self
 
@@ -413,7 +413,7 @@ def _create_table_prompt(
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
     if primary_keys[name] is not None:
-        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}_'."
+        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}-'."
         prompt += " There is one exception: if primary keys are in existing data, don't add prefix to them."
         prompt += "\n\n"
 
