@@ -84,7 +84,7 @@ tables = {
     "customers": {
         "prompt": "Customers of a hardware store",
         "columns": {
-            "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+            "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
             "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
         },
         "primary_key": "customer_id",
@@ -100,7 +100,7 @@ tables = {
     "orders": {
         "prompt": "Orders of a Customer",
         "columns": {
-            "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+            "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
             "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "string"},
             "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
             "text": {"prompt": "order text description", "dtype": "string"},
@@ -179,9 +179,9 @@ tables = {
     "employees": {
         "prompt": "Employees of a company",
         "columns": {
-            "employee_id": {"prompt": "the unique id of the employee", "dtype": "integer"},
+            "employee_id": {"prompt": "the unique id of the employee; sequential", "dtype": "string"},
             "name": {"prompt": "first name and last name of the president", "dtype": "string"},
-            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "integer"},
+            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "string"},
             "role": {"prompt": "the role of the employee", "dtype": "string"},
         },
         "primary_key": "employee_id",
