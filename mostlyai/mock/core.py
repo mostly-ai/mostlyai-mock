@@ -987,6 +987,8 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
     tables = tables.copy()
     for table_name, existing_table in existing_data.items():
         table_config = tables.setdefault(table_name, {})
+
+        # prepend column configs for existing data columns, that are not specified in the mock config
         column_configs = table_config.setdefault("columns", {})
         existing_column_configs = {
             existing_column: {"dtype": _infer_dtype(existing_table[existing_column])}
@@ -994,6 +996,12 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
             if existing_column not in column_configs
         }
         column_configs = {**existing_column_configs, **column_configs}
+
+        # primary keys are always strings
+        primary_key = table_config.get("primary_key", None)
+        if primary_key is not None:
+            column_configs[primary_key]["dtype"] = DType.STRING
+
         table_config["columns"] = column_configs
     return tables
 
@@ -1025,18 +1033,38 @@ def _harmonize_existing_data(
 
     for existing_table_name, existing_table in existing_data.items():
         existing_table_config = mock_config.root[existing_table_name]
+
         for existing_column in existing_table.columns:
             existing_column_config = existing_table_config.columns[existing_column]
+
+            # ensure that the existing data has compatible dtypes with the column config
             original_series = existing_table[existing_column]
             coerced_series = _align_series_dtypes_with_column_config(original_series, existing_column_config)
             n_original_na = original_series.isna().sum()
             n_coerced_na = coerced_series.isna().sum()
             if n_original_na != n_coerced_na:
                 raise ValueError(
-                    f"Coercion of column '{existing_column}' in existing data resulted in data loss. Ensure that the existing data is consistent with the mock configuration."
+                    f"Coercion of existing data column '{existing_column}' in table '{existing_table_name}' resulted in data loss. "
+                    f"Ensure that the existing data is consistent with the mock configuration."
                 )
-            # TODO 1: check that the values are consistent with allowed values from column config
-            # TODO 2: check that primary keys are unique
+
+            # ensure that the existing data has values allowed by the column config
+            if existing_column_config.values:
+                if not set(existing_table[existing_column].unique()).issubset(existing_column_config.values):
+                    raise ValueError(
+                        f"Existing data column '{existing_column}' in table '{existing_table_name}' has values disallowed by the column config. "
+                        f"Ensure that the existing data is consistent with the mock configuration."
+                    )
+
+        # ensure that the existing data has unique primary keys
+        existing_table_primary_key = existing_table_config.primary_key
+        if existing_table_primary_key is not None:
+            if not existing_table[existing_table_primary_key].is_unique:
+                raise ValueError(
+                    f"Existing data table '{existing_table_name}' has non-unique primary key column '{existing_table_primary_key}'. "
+                    f"Ensure that the primary key is unique."
+                )
+
             existing_table[existing_column] = coerced_series
 
     return existing_data
