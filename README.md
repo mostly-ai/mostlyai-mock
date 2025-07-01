@@ -31,11 +31,11 @@ os.environ["OPENAI_API_KEY"] = "your-api-key"
 # os.environ["GROQ_API_KEY"] = "your-api-key"
 ```
 
-Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`. 
+Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`.
 
-Note: Our `mostlyai-mock` uses [LiteLLM](https://github.com/BerriAI/litellm) under the hood, which supports a wide range of LLM providers and models. For the complete list of supported models and providers, please refer to the [LiteLLM documentation](https://docs.litellm.ai/docs/providers).
+Note: `mostlyai-mock` uses [LiteLLM](https://github.com/BerriAI/litellm) under the hood, which supports a wide range of LLM providers and models. For the complete list of supported models and providers, please refer to the [LiteLLM documentation](https://docs.litellm.ai/docs/providers).
 
-1. Create your first basic mock table from scratch
+3. Create your first basic mock table from scratch
 
 ```python
 from mostlyai import mock
