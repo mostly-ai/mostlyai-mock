@@ -130,7 +130,8 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 column_config = table_config.columns[table_config.primary_key]
                 if column_config.dtype not in [DType.STRING, DType.INTEGER]:
                     raise ValueError(
-                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types: {[DType.STRING.value, DType.INTEGER.value]}"
+                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
+                        f" {[DType.STRING.value, DType.INTEGER.value]}"
                     )
         return self
 
