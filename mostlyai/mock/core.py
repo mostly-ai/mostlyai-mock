@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import json
 import math
 from collections import deque
@@ -263,7 +264,9 @@ async def _sample_table(
         llm_config=llm_config,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    table_df = await _convert_table_rows_generator_to_df(
+        table_rows_generator=table_rows_generator, columns=columns, primary_key=primary_keys[name]
+    )
     return table_df
 
 
@@ -316,7 +319,8 @@ def _create_table_prompt(
     # define table
     prompt += f"## Target Table: `{name}`\n\n"
 
-    prompt += f"### Target Table Primary Key: `{primary_keys[name]}`\n\n"
+    target_primary_key = primary_keys[name]
+    prompt += f"### Target Table Primary Key: `{target_primary_key}`\n\n"
 
     # add columns specifications
     prompt += "### Target Table Column Specifications:\n\n"
@@ -324,6 +328,9 @@ def _create_table_prompt(
         name: config.model_dump(exclude_defaults=True, exclude_unset=True, exclude_none=True)
         for name, config in columns.items()
     }
+    if target_primary_key is not None:
+        # always generate primary keys as strings, because we will later ask the LLM to add a prefix to them
+        column_specifications[target_primary_key]["dtype"] = DType.STRING.value
     if existing_data is not None:
         # do not generate values for columns that already exist in existing data
         column_specifications = {
@@ -352,7 +359,7 @@ def _create_table_prompt(
         has_self_referencing_foreign_keys_section = True
         prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
         for fk in self_referencing_foreign_keys:
-            prompt += f"### Primary Key Column: `{primary_keys[name]}`\n\n"
+            prompt += f"### Primary Key Column: `{target_primary_key}`\n\n"
 
             prompt += f"### Foreign Key Column: `{fk.column}`\n\n"
 
@@ -413,7 +420,7 @@ def _create_table_prompt(
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
 
-    if primary_keys[name] is not None:
+    if target_primary_key is not None:
         prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}-'."
         prompt += " There is one exception: if primary keys are in existing data, don't add prefix to them."
         prompt += "\n\n"
@@ -476,6 +483,7 @@ def _create_table_prompt(
         prompt += " Additionally, add column called `_ROW_IDX` that is a counter from 1 to the number of rows generated so far within current batch."
 
     prompt += "\n"
+    print(prompt)
     return prompt
 
 
@@ -526,6 +534,7 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
                 finally:
                     buffer = list()
                     in_row_json = False
+                print(row)
                 yield row
 
 
@@ -568,11 +577,12 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
 
 
 def _create_structured_output_schema(
-    columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+    columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None, primary_key: str | None
 ) -> type[BaseModel]:
-    def create_annotation(column_config: ColumnConfig) -> type:
+    def create_annotation(column_config: ColumnConfig, is_primary_key: bool) -> type:
         if column_config.values or column_config.dtype is DType.CATEGORY:
             return Literal[tuple(column_config.values)]  # type: ignore
+        dtype = column_config.dtype if not is_primary_key else DType.STRING
         return {
             DType.INTEGER: int | None,
             DType.FLOAT: float | None,
@@ -582,13 +592,13 @@ def _create_structured_output_schema(
             # thus we represent dates and datetimes as strings
             DType.DATE: str | None,
             DType.DATETIME: str | None,
-        }[column_config.dtype]
+        }[dtype]
 
     fields = {}
     for column_name, column_config in columns.items():
         if existing_data is not None and column_name in existing_data.columns:
             continue  # skip columns that already exist in existing data
-        annotation = create_annotation(column_config)
+        annotation = create_annotation(column_config, is_primary_key=column_name == primary_key)
         fields[column_name] = (annotation, Field(...))
     TableRow = create_model("TableRow", **fields)
     TableRows = create_model("TableRows", rows=(list[TableRow], ...))
@@ -636,7 +646,7 @@ async def _worker(
             structured_output_schema = None
             if llm_output_format == LLMOutputFormat.JSON:
                 structured_output_schema = _create_structured_output_schema(
-                    columns=columns, existing_data=existing_batch
+                    columns=columns, existing_data=existing_batch, primary_key=primary_keys[name]
                 )
 
             # construct litellm kwargs
@@ -948,7 +958,19 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
 async def _convert_table_rows_generator_to_df(
     table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
+    primary_key: str | None,
 ) -> pd.DataFrame:
+    def maybe_map_primary_keys_to_integers(
+        df: pd.DataFrame, columns: dict[str, ColumnConfig], primary_key: str | None
+    ) -> pd.DataFrame:
+        def intdigest(s: str, bits: int = 16) -> int:
+            h = hashlib.sha256(s.encode("utf-8")).digest()
+            return int.from_bytes(h, "big") % (1 << bits)
+
+        if primary_key is not None and columns[primary_key].dtype is DType.INTEGER:
+            df[primary_key] = df[primary_key].apply(lambda x: intdigest(x))  # TODO: handle nulls
+        return df
+
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         df = df.copy()
         for column_name, column_config in columns.items():
@@ -962,6 +984,8 @@ async def _convert_table_rows_generator_to_df(
     # extract rows and convert to DataFrame
     rows = [item["row"] for item in items]
     df = pd.DataFrame(rows)
+    # harmonize dtypes
+    df = maybe_map_primary_keys_to_integers(df, columns, primary_key)
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
