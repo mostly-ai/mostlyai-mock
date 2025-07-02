@@ -809,6 +809,8 @@ async def _create_table_rows_generator(
 
     # calculate batch_sizes
     assert sample_size is not None, "sample_size should have been filled by this point"
+    optimal_batch_size = max(math.ceil(sample_size / n_workers), 5)
+    batch_size = min(batch_size, optimal_batch_size)
     n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
     batch_sizes = [batch_size] * n_total_batches
     if context_batches is None:
