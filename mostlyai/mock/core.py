@@ -1154,10 +1154,6 @@ async def _sample_common(
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
 
 
-def _sample_common_sync(*args, **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
-    return asyncio.run(_sample_common(*args, **kwargs))
-
-
 def sample(
     *,
     tables: dict[str, dict],
