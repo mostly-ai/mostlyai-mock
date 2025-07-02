@@ -1415,7 +1415,7 @@ async def _asample(
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
-    return _sample_common(
+    return await _sample_common(
         tables=tables,
         sample_size=sample_size,
         existing_data=existing_data,
