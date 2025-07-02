@@ -269,10 +269,6 @@ async def _sample_table(
     return table_df
 
 
-def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
-    return asyncio.run(_sample_table(*args, **kwargs))
-
-
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
     return f"""
 You are a specialized data generator designed to create highly realistic, contextually appropriate data based on schema definitions.
@@ -1110,6 +1106,58 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
     return execution_plan
 
 
+async def _sample_common(
+    *,
+    tables: dict[str, dict],
+    sample_size: int | dict[str, int] = 4,
+    existing_data: dict[str, pd.DataFrame] | None = None,
+    model: str = "openai/gpt-4.1-nano",
+    api_key: str | None = None,
+    temperature: float = 1.0,
+    top_p: float = 0.95,
+    n_workers: int = 10,
+    return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable | None = None,
+):
+    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
+    config = MockConfig(tables)
+
+    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
+
+    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
+    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
+
+    n_workers = max(min(n_workers, 10), 1)
+
+    execution_plan: list[str] = _build_execution_plan(config)
+
+    data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
+
+    for table_name in execution_plan:
+        table_config = config.root[table_name]
+        df = await _sample_table(
+            name=table_name,
+            prompt=table_config.prompt,
+            columns=table_config.columns,
+            foreign_keys=table_config.foreign_keys,
+            primary_keys=primary_keys,
+            data=data,
+            sample_size=sample_size.get(table_name),
+            previous_rows_size=10,  # present 10 previously generated rows to the LLM
+            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+            n_workers=n_workers,
+            llm_config=llm_config,
+            progress_callback=progress_callback,
+        )
+        data[table_name] = df
+
+    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
+
+
+def _sample_common_sync(*args, **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
+    return asyncio.run(_sample_common(*args, **kwargs))
+
+
 def sample(
     *,
     tables: dict[str, dict],
@@ -1338,45 +1386,21 @@ def sample(
     ```
     """
 
-    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
-    config = MockConfig(tables)
-
-    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
-
-    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
-    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
-
-    n_workers = max(min(n_workers, 10), 1)
-
-    execution_plan: list[str] = _build_execution_plan(config)
-
-    data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
-
-    # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
-    # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
-    # a new thread is spawned for each call to `_sample_table`
-    # NOTE: initialize executor only once, doing that inside the loop might lead to deadlocks
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        for table_name in execution_plan:
-            table_config = config.root[table_name]
-            future = executor.submit(
-                _sample_table_sync,
-                name=table_name,
-                prompt=table_config.prompt,
-                columns=table_config.columns,
-                foreign_keys=table_config.foreign_keys,
-                primary_keys=primary_keys,
-                data=data,
-                sample_size=sample_size.get(table_name),
-                previous_rows_size=10,  # present 10 previously generated rows to the LLM
-                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-                n_workers=n_workers,
-                llm_config=llm_config,
-            )
-            df = future.result()
-            data[table_name] = df
-
-    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
+        future = executor.submit(
+            _sample_common_sync,
+            tables=tables,
+            sample_size=sample_size,
+            existing_data=existing_data,
+            model=model,
+            api_key=api_key,
+            temperature=temperature,
+            top_p=top_p,
+            n_workers=n_workers,
+            return_type=return_type,
+            progress_callback=None,
+        )
+        return future.result()
 
 
 async def _asample(
@@ -1392,39 +1416,18 @@ async def _asample(
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
-    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
-    config = MockConfig(tables)
-
-    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
-
-    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
-    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
-
-    n_workers = max(min(n_workers, 10), 1)
-
-    execution_plan: list[str] = _build_execution_plan(config)
-
-    data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
-
-    for table_name in execution_plan:
-        table_config = config.root[table_name]
-        df = await _sample_table(
-            name=table_name,
-            prompt=table_config.prompt,
-            columns=table_config.columns,
-            foreign_keys=table_config.foreign_keys,
-            primary_keys=primary_keys,
-            data=data,
-            sample_size=sample_size.get(table_name),
-            previous_rows_size=10,  # present 10 previously generated rows to the LLM
-            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-            n_workers=n_workers,
-            llm_config=llm_config,
-            progress_callback=progress_callback,
-        )
-        data[table_name] = df
-
-    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
+    return _sample_common(
+        tables=tables,
+        sample_size=sample_size,
+        existing_data=existing_data,
+        model=model,
+        api_key=api_key,
+        temperature=temperature,
+        top_p=top_p,
+        n_workers=n_workers,
+        return_type=return_type,
+        progress_callback=progress_callback,
+    )
 
 
 _asample.__doc__ = sample.__doc__
