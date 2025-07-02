@@ -248,6 +248,7 @@ async def _sample_table(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    cb,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
         name=name,
@@ -261,6 +262,7 @@ async def _sample_table(
         non_context_size=non_context_size,
         n_workers=n_workers,
         llm_config=llm_config,
+        cb=cb,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
@@ -766,6 +768,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    cb,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
@@ -911,6 +914,7 @@ async def _create_table_rows_generator(
             if n_yielded_sequences >= sample_size:
                 break
         n_completed_batches += 1
+        cb((name, n_completed_batches, n_total_batches))
         result_queue.task_done()
 
     # gracefully shutdown workers
@@ -1343,6 +1347,9 @@ def sample(
 
     data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
 
+    def cb(arg):
+        print(arg)
+
     # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
     # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
     # a new thread is spawned for each call to `_sample_table`
@@ -1363,6 +1370,7 @@ def sample(
                 non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
                 n_workers=n_workers,
                 llm_config=llm_config,
+                cb=cb,
             )
             df = future.result()
             data[table_name] = df
