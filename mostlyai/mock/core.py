@@ -1116,6 +1116,7 @@ def sample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    update_progress,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1347,8 +1348,8 @@ def sample(
 
     data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
 
-    def cb(arg):
-        print(arg)
+    def cb(obj):
+        update_progress(obj[0], obj[1], obj[2])
 
     # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
     # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
