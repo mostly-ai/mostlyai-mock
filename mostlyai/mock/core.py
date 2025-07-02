@@ -924,9 +924,9 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
     series = series.copy()
     if column_config.dtype in [DType.DATE, DType.DATETIME]:
 
-        def harmonize_datetime(x):
+        def harmonize_datetime(x: Any):
             try:
-                return dateutil.parser.parse(x)
+                return dateutil.parser.parse(str(x))
             except Exception:
                 return pd.NaT
 
