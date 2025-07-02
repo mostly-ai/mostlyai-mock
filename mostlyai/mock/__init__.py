@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from mostlyai.mock.core import sample, sample_async
+from mostlyai.mock.core import _asample, sample
 
-__all__ = ["sample", "sample_async"]
+__all__ = ["sample", "_asample"]
 __version__ = "0.1.12"  # Do not set this manually. Use poetry version [params].

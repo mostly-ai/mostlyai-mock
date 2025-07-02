@@ -61,7 +61,7 @@ async def mock_data(
     temperature: float = 1.0,
     top_p: float = 0.95,
 ) -> dict[str, str]:
-    data = await mock.sample_async(
+    data = await mock._asample(
         tables=tables,
         sample_size=sample_size,
         model=model,
