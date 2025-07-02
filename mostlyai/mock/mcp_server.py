@@ -25,7 +25,7 @@ Synthetic Mock Data.
 
 Use LLMs to generate any Tabular Data towards your needs. Create from scratch, expand existing datasets, or enrich tables with new columns.
 
-This tool is a proxy to the `mostlyai.mock.sample` function, but returns a dictionary of paths to the generated CSV files.
+This tool is a proxy to the `mostlyai.mock._asample` function, but returns a dictionary of paths to the generated CSV files.
 
 Present the result nicely to the user, in Markdown format. Example:
 
@@ -33,8 +33,8 @@ Mock data can be found under the following paths:
 - `/tmp/tmpl41bwa6n/players.csv`
 - `/tmp/tmpl41bwa6n/seasons.csv`
 
-== mostlyai.mock.sample DocString ==
-{mock.sample.__doc__}
+== mostlyai.mock._asample docstring ==
+{mock._asample.__doc__}
 """
 
 mcp = FastMCP(name="MostlyAI Mock MCP Server")
