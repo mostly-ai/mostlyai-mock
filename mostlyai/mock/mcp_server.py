@@ -16,7 +16,7 @@ import os
 import tempfile
 
 import pandas as pd
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from mostlyai import mock
 
@@ -51,7 +51,8 @@ def _store_locally(data: dict[str, pd.DataFrame]) -> dict[str, str]:
 
 
 @mcp.tool(description=SAMPLE_MOCK_TOOL_DESCRIPTION)
-def mock_data(
+async def mock_data(
+    ctx: Context,
     *,
     tables: dict[str, dict],
     sample_size: int,
@@ -60,7 +61,7 @@ def mock_data(
     temperature: float = 1.0,
     top_p: float = 0.95,
 ) -> dict[str, str]:
-    data = mock.sample(
+    data = await mock.sample_async(
         tables=tables,
         sample_size=sample_size,
         model=model,
@@ -68,13 +69,14 @@ def mock_data(
         temperature=temperature,
         top_p=top_p,
         return_type="dict",
+        progress_callback=ctx.report_progress,
     )
     locations = _store_locally(data)
     return locations
 
 
 def main():
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ import concurrent.futures
 import json
 import math
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
@@ -248,6 +248,7 @@ async def _sample_table(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
         name=name,
@@ -261,6 +262,7 @@ async def _sample_table(
         non_context_size=non_context_size,
         n_workers=n_workers,
         llm_config=llm_config,
+        progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
@@ -766,6 +768,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    progress_callback: Callable | None = None,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
@@ -911,6 +914,12 @@ async def _create_table_rows_generator(
             if n_yielded_sequences >= sample_size:
                 break
         n_completed_batches += 1
+        if progress_callback:
+            await progress_callback(
+                progress=n_completed_batches,
+                total=n_total_batches,
+                message=f"Generating rows for table `{name}`: {n_completed_batches}/{n_total_batches}",
+            )
         result_queue.task_done()
 
     # gracefully shutdown workers
@@ -1381,6 +1390,7 @@ async def sample_async(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1626,6 +1636,7 @@ async def sample_async(
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             n_workers=n_workers,
             llm_config=llm_config,
+            progress_callback=progress_callback,
         )
         data[table_name] = df
 
