@@ -1386,9 +1386,12 @@ def sample(
     ```
     """
 
+    def sample_common_sync(*args, **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
+        return asyncio.run(_sample_common(*args, **kwargs))
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
-            _sample_common_sync,
+            sample_common_sync,
             tables=tables,
             sample_size=sample_size,
             existing_data=existing_data,
