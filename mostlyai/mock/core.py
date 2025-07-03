@@ -806,6 +806,13 @@ async def _create_table_rows_generator(
             assert non_context_table_name in data
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
+    # calculate ideal batch size that spreads the workload evenly across workers
+    ideal_batch_size = max(math.ceil(sample_size / n_workers), 5)
+    if ideal_batch_size < batch_size:
+        # never increase batch_size beyond initial value
+        # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
+        batch_size = ideal_batch_size
+
     # calculate batch_sizes
     assert sample_size is not None, "sample_size should have been filled by this point"
     n_total_batches = len(context_batches) if context_batches is not None else math.ceil(sample_size / batch_size)
