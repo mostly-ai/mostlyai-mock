@@ -19,7 +19,7 @@ import concurrent.futures
 import json
 import math
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
@@ -81,8 +81,8 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
-                        f"Column '{fk.column}' type '{fk_field.dtype}' does not match "
-                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.dtype}'"
+                        f"Column '{fk.column}' type '{fk_field.dtype.value}' does not match "
+                        f"referenced primary key '{referenced_config.primary_key}' type '{pk_field.dtype.value}'"
                     )
 
         return tables
@@ -111,6 +111,28 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         for table_name in child_to_parents:
             detect_cycle(table_name, [])
 
+        return self
+
+    @model_validator(mode="after")
+    def ensure_values_are_not_provided_for_primary_key(self) -> MockConfig:
+        for table_name, table_config in self.root.items():
+            for column_name, column_config in table_config.columns.items():
+                if column_name == table_config.primary_key and column_config.values:
+                    raise ValueError(
+                        f"Values cannot be provided for primary key column '{column_name}' in table '{table_name}'"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
+        for table_name, table_config in self.root.items():
+            if table_config.primary_key:
+                column_config = table_config.columns[table_config.primary_key]
+                if column_config.dtype not in [DType.STRING]:
+                    raise ValueError(
+                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
+                        f" {[DType.STRING.value]}"
+                    )
         return self
 
     def get_dependency_mappings(self) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
@@ -226,6 +248,7 @@ async def _sample_table(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
         name=name,
@@ -239,14 +262,11 @@ async def _sample_table(
         non_context_size=non_context_size,
         n_workers=n_workers,
         llm_config=llm_config,
+        progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
-
-
-def _sample_table_sync(*args, **kwargs) -> pd.DataFrame:
-    return asyncio.run(_sample_table(*args, **kwargs))
 
 
 def _create_system_prompt(llm_output_format: LLMOutputFormat) -> str:
@@ -278,6 +298,7 @@ def _create_table_prompt(
     prompt: str,
     columns: dict[str, ColumnConfig],
     primary_keys: dict[str, str],
+    batch_idx: int,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
@@ -292,7 +313,8 @@ def _create_table_prompt(
     # define table
     prompt += f"## Target Table: `{name}`\n\n"
 
-    prompt += f"### Target Table Primary Key: `{primary_keys[name]}`\n\n"
+    target_primary_key = primary_keys[name]
+    prompt += f"### Target Table Primary Key: `{target_primary_key}`\n\n"
 
     # add columns specifications
     prompt += "### Target Table Column Specifications:\n\n"
@@ -328,7 +350,7 @@ def _create_table_prompt(
         has_self_referencing_foreign_keys_section = True
         prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
         for fk in self_referencing_foreign_keys:
-            prompt += f"### Primary Key Column: `{primary_keys[name]}`\n\n"
+            prompt += f"### Primary Key Column: `{target_primary_key}`\n\n"
 
             prompt += f"### Foreign Key Column: `{fk.column}`\n\n"
 
@@ -388,6 +410,11 @@ def _create_table_prompt(
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
+
+    if target_primary_key is not None:
+        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}-'."
+        prompt += " There is one exception: if primary keys are in existing data, don't add prefix to them."
+        prompt += "\n\n"
 
     if has_context_table_section:
         assert foreign_keys
@@ -625,8 +652,9 @@ async def _worker(
                 name=name,
                 prompt=prompt,
                 columns=columns,
-                primary_keys=primary_keys,
+                batch_idx=batch_idx,
                 batch_size=batch_size,
+                primary_keys=primary_keys,
                 foreign_keys=foreign_keys,
                 existing_data=existing_batch,
                 context_data=context_batch,
@@ -735,6 +763,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    progress_callback: Callable | None = None,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
@@ -775,6 +804,13 @@ async def _create_table_rows_generator(
             non_context_table_name = fk.referenced_table
             assert non_context_table_name in data
             non_context_data[non_context_table_name] = data[non_context_table_name]
+
+    # calculate ideal batch size that spreads the workload evenly across workers
+    ideal_batch_size = max(math.ceil(sample_size / n_workers), 5)
+    if ideal_batch_size < batch_size:
+        # never increase batch_size beyond initial value
+        # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
+        batch_size = ideal_batch_size
 
     # calculate batch_sizes
     assert sample_size is not None, "sample_size should have been filled by this point"
@@ -880,6 +916,12 @@ async def _create_table_rows_generator(
             if n_yielded_sequences >= sample_size:
                 break
         n_completed_batches += 1
+        if progress_callback:
+            await progress_callback(
+                progress=n_completed_batches,
+                total=n_total_batches,
+                message=f"Generating rows for table `{name}`: {n_completed_batches}/{n_total_batches}",
+            )
         result_queue.task_done()
 
     # gracefully shutdown workers
@@ -889,6 +931,32 @@ async def _create_table_rows_generator(
     await asyncio.gather(*workers)
 
 
+def _align_series_dtypes_with_column_config(series: pd.Series, column_config: ColumnConfig) -> pd.Series:
+    series = series.copy()
+    if column_config.dtype in [DType.DATE, DType.DATETIME]:
+
+        def harmonize_datetime(x: Any):
+            try:
+                return dateutil.parser.parse(str(x))
+            except Exception:
+                return pd.NaT
+
+        series = pd.to_datetime(series.apply(harmonize_datetime), errors="coerce")
+    elif column_config.dtype is DType.INTEGER:
+        series = pd.to_numeric(series, errors="coerce", downcast="integer").astype("int64[pyarrow]")
+    elif column_config.dtype is DType.FLOAT:
+        series = pd.to_numeric(series, errors="coerce").astype("double[pyarrow]")
+    elif column_config.dtype is DType.BOOLEAN:
+        series = series.map(lambda x: True if str(x).lower() == "true" else x)
+        series = series.map(lambda x: False if str(x).lower() == "false" else x)
+        series = pd.to_numeric(series, errors="coerce").astype("boolean[pyarrow]")
+    elif column_config.dtype is DType.CATEGORY:
+        series = pd.Categorical(series, categories=column_config.values)
+    else:
+        series = series.astype("string[pyarrow]")
+    return series
+
+
 async def _convert_table_rows_generator_to_df(
     table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
@@ -896,29 +964,7 @@ async def _convert_table_rows_generator_to_df(
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         df = df.copy()
         for column_name, column_config in columns.items():
-            if column_config.dtype in [DType.DATE, DType.DATETIME]:
-
-                def harmonize_datetime(x):
-                    try:
-                        return dateutil.parser.parse(x)
-                    except Exception:
-                        return pd.NaT
-
-                df[column_name] = pd.to_datetime(df[column_name].apply(harmonize_datetime), errors="coerce")
-            elif column_config.dtype is DType.INTEGER:
-                df[column_name] = pd.to_numeric(df[column_name], errors="coerce", downcast="integer").astype(
-                    "int64[pyarrow]"
-                )
-            elif column_config.dtype is DType.FLOAT:
-                df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("double[pyarrow]")
-            elif column_config.dtype is DType.BOOLEAN:
-                df[column_name] = df[column_name].map(lambda x: True if str(x).lower() == "true" else x)
-                df[column_name] = df[column_name].map(lambda x: False if str(x).lower() == "false" else x)
-                df[column_name] = pd.to_numeric(df[column_name], errors="coerce").astype("boolean[pyarrow]")
-            elif column_config.dtype is DType.CATEGORY:
-                df[column_name] = pd.Categorical(df[column_name], categories=column_config.values)
-            else:
-                df[column_name] = df[column_name].astype("string[pyarrow]")
+            df[column_name] = _align_series_dtypes_with_column_config(df[column_name], column_config)
         return df
 
     # consume entire generator
@@ -928,6 +974,7 @@ async def _convert_table_rows_generator_to_df(
     # extract rows and convert to DataFrame
     rows = [item["row"] for item in items]
     df = pd.DataFrame(rows)
+    # harmonize dtypes
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
 
@@ -951,6 +998,8 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
     tables = tables.copy()
     for table_name, existing_table in existing_data.items():
         table_config = tables.setdefault(table_name, {})
+
+        # prepend column configs for existing data columns, that are not specified in the mock config
         column_configs = table_config.setdefault("columns", {})
         existing_column_configs = {
             existing_column: {"dtype": _infer_dtype(existing_table[existing_column])}
@@ -958,6 +1007,12 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
             if existing_column not in column_configs
         }
         column_configs = {**existing_column_configs, **column_configs}
+
+        # primary keys are always strings
+        primary_key = table_config.get("primary_key", None)
+        if primary_key is not None:
+            column_configs[primary_key]["dtype"] = DType.STRING
+
         table_config["columns"] = column_configs
     return tables
 
@@ -976,6 +1031,54 @@ def _harmonize_sample_size(sample_size: int | dict[str, int], config: MockConfig
         sample_size[table_name] = max(1, sample_size[table_name])
 
     return sample_size
+
+
+def _harmonize_existing_data(
+    existing_data: dict[str, pd.DataFrame] | None, mock_config: MockConfig
+) -> dict[str, pd.DataFrame]:
+    if existing_data is None:
+        return {}
+
+    # by this point, mock config should have been validated, so we can assume that all tables in existing_data are defined in the mock config
+    assert set(mock_config.root.keys()).issuperset(existing_data.keys())
+
+    for existing_table_name, existing_table in existing_data.items():
+        existing_table_config = mock_config.root[existing_table_name]
+
+        for existing_column in existing_table.columns:
+            existing_column_config = existing_table_config.columns[existing_column]
+
+            # ensure that the existing data has compatible dtypes with the column config
+            original_series = existing_table[existing_column]
+            coerced_series = _align_series_dtypes_with_column_config(original_series, existing_column_config)
+            n_original_na = original_series.isna().sum()
+            n_coerced_na = coerced_series.isna().sum()
+            if n_original_na != n_coerced_na:
+                raise ValueError(
+                    f"Coercion of existing data column '{existing_column}' in table '{existing_table_name}' resulted in data loss. "
+                    f"Ensure that the existing data is consistent with the mock configuration."
+                )
+
+            # ensure that the existing data has values allowed by the column config
+            if existing_column_config.values:
+                if not set(existing_table[existing_column].unique()).issubset(existing_column_config.values):
+                    raise ValueError(
+                        f"Existing data column '{existing_column}' in table '{existing_table_name}' has values disallowed by the column config. "
+                        f"Ensure that the existing data is consistent with the mock configuration."
+                    )
+
+        # ensure that the existing data has unique primary keys
+        existing_table_primary_key = existing_table_config.primary_key
+        if existing_table_primary_key is not None:
+            if not existing_table[existing_table_primary_key].is_unique:
+                raise ValueError(
+                    f"Existing data table '{existing_table_name}' has non-unique primary key column '{existing_table_primary_key}'. "
+                    f"Ensure that the primary key is unique."
+                )
+
+            existing_table[existing_column] = coerced_series
+
+    return existing_data
 
 
 def _build_execution_plan(config: MockConfig) -> list[str]:
@@ -1007,6 +1110,54 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
             if child not in bfs_queue and child not in processed:
                 bfs_queue.append(child)
     return execution_plan
+
+
+async def _sample_common(
+    *,
+    tables: dict[str, dict],
+    sample_size: int | dict[str, int] = 4,
+    existing_data: dict[str, pd.DataFrame] | None = None,
+    model: str = "openai/gpt-4.1-nano",
+    api_key: str | None = None,
+    temperature: float = 1.0,
+    top_p: float = 0.95,
+    n_workers: int = 10,
+    return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable | None = None,
+):
+    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
+    config = MockConfig(tables)
+
+    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
+
+    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
+    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
+
+    n_workers = max(min(n_workers, 10), 1)
+
+    execution_plan: list[str] = _build_execution_plan(config)
+
+    data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
+
+    for table_name in execution_plan:
+        table_config = config.root[table_name]
+        df = await _sample_table(
+            name=table_name,
+            prompt=table_config.prompt,
+            columns=table_config.columns,
+            foreign_keys=table_config.foreign_keys,
+            primary_keys=primary_keys,
+            data=data,
+            sample_size=sample_size.get(table_name),
+            previous_rows_size=10,  # present 10 previously generated rows to the LLM
+            non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
+            n_workers=n_workers,
+            llm_config=llm_config,
+            progress_callback=progress_callback,
+        )
+        data[table_name] = df
+
+    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
 
 
 def sample(
@@ -1094,15 +1245,15 @@ def sample(
         "customers": {
             "prompt": "Customers of a hardware store",
             "columns": {
-                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",  # single string; no composite keys allowed
+            "primary_key": "customer_id",  # single string; no composite keys allowed; primary keys must have string dtype
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
             "columns": {
-                "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
+                "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "string"},
                 "name": {"prompt": "the name of the warehouse", "dtype": "string"},
             },
             "primary_key": "warehouse_id",
@@ -1110,8 +1261,8 @@ def sample(
         "orders": {
             "prompt": "Orders of a Customer",
             "columns": {
-                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
-                "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
+                "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "string"},
                 "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
                 "text": {"prompt": "order text description", "dtype": "string"},
                 "amount": {"prompt": "order amount in USD", "dtype": "float"},
@@ -1189,7 +1340,7 @@ def sample(
         "customers": {
             "prompt": "Customers of a hardware store",
             "columns": {
-                "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+                "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
                 "email": {"prompt": "email address of the customer", "dtype": "string"},
                 "phone": {"prompt": "phone number of the customer", "dtype": "string"},
@@ -1201,7 +1352,7 @@ def sample(
             "prompt": "Orders of a Customer",
             "columns": {
                 "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
-                "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
+                "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
                 "order_date": {"prompt": "the date when the order was placed", "dtype": "date"},
                 "total_amount": {"prompt": "order amount in USD", "dtype": "float"},
                 "status": {"dtype": "category", "values": ["pending", "shipped", "delivered", "cancelled"]},
@@ -1237,42 +1388,51 @@ def sample(
     ```
     """
 
-    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
-    config = MockConfig(tables)
+    def sample_common_sync(*args, **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
+        return asyncio.run(_sample_common(*args, **kwargs))
 
-    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
-
-    sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
-    primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
-
-    n_workers = max(min(n_workers, 10), 1)
-
-    execution_plan: list[str] = _build_execution_plan(config)
-
-    data: dict[str, pd.DataFrame] = existing_data or {}
-
-    # synchronous `sample` function makes independent calls to asynchronous `_sample_table` function
-    # in order to avoid conflicts with potentially existing event loop (e.g. in Jupyter environment),
-    # a new thread is spawned for each call to `_sample_table`
-    # NOTE: initialize executor only once, doing that inside the loop might lead to deadlocks
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        for table_name in execution_plan:
-            table_config = config.root[table_name]
-            future = executor.submit(
-                _sample_table_sync,
-                name=table_name,
-                prompt=table_config.prompt,
-                columns=table_config.columns,
-                foreign_keys=table_config.foreign_keys,
-                primary_keys=primary_keys,
-                data=data,
-                sample_size=sample_size.get(table_name),
-                previous_rows_size=10,  # present 10 previously generated rows to the LLM
-                non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
-                n_workers=n_workers,
-                llm_config=llm_config,
-            )
-            df = future.result()
-            data[table_name] = df
+        future = executor.submit(
+            sample_common_sync,
+            tables=tables,
+            sample_size=sample_size,
+            existing_data=existing_data,
+            model=model,
+            api_key=api_key,
+            temperature=temperature,
+            top_p=top_p,
+            n_workers=n_workers,
+            return_type=return_type,
+            progress_callback=None,
+        )
+        return future.result()
 
-    return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
+
+async def _asample(
+    *,
+    tables: dict[str, dict],
+    sample_size: int | dict[str, int] = 4,
+    existing_data: dict[str, pd.DataFrame] | None = None,
+    model: str = "openai/gpt-4.1-nano",
+    api_key: str | None = None,
+    temperature: float = 1.0,
+    top_p: float = 0.95,
+    n_workers: int = 10,
+    return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable | None = None,
+) -> pd.DataFrame | dict[str, pd.DataFrame]:
+    return await _sample_common(
+        tables=tables,
+        sample_size=sample_size,
+        existing_data=existing_data,
+        model=model,
+        api_key=api_key,
+        temperature=temperature,
+        top_p=top_p,
+        n_workers=n_workers,
+        return_type=return_type,
+        progress_callback=progress_callback,
+    )
+
+
+_asample.__doc__ = sample.__doc__

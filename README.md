@@ -60,17 +60,17 @@ df = mock.sample(
     model="openai/gpt-4.1-nano",  # select the LLM model (optional)
 )
 print(df)
-#   nationality            name  gender  age date_of_birth        checkin_time  is_vip  price_per_night  room_number
-# 0          AT     Anna Müller  female   29    1994-09-15 2025-01-05 14:30:00    True            350.0          101
-# 1          DE  Johann Schmidt    male   45    1978-11-20 2025-01-06 16:45:00   False            250.0          102
-# 2          CH      Lara Meier  female   32    1991-04-12 2025-01-05 12:00:00    True            400.0          103
-# 3          IT     Marco Rossi    male   38    1985-02-25 2025-01-07 09:15:00   False            280.0          201
-# 4          FR   Claire Dupont  female   24    2000-07-08 2025-01-07 11:20:00   False            220.0          202
-# 5          AT    Felix Gruber    male   52    1972-01-10 2025-01-06 17:50:00    True            375.0          203
-# 6          DE   Sophie Becker  female   27    1996-03-30 2025-01-08 08:30:00   False            230.0          204
-# 7          CH      Max Keller    male   31    1992-05-16 2025-01-09 14:10:00   False            290.0          101
-# 8          IT  Giulia Bianchi  female   36    1988-08-19 2025-01-05 15:55:00    True            410.0          102
-# 9          FR    Louis Martin    male   44    1980-12-05 2025-01-07 10:40:00   False            270.0          103
+#   nationality                 name  gender  age date_of_birth        checkin_time is_vip  price_per_night  room_number
+# 0          FR          Jean Dupont    male   29    1994-03-15 2025-01-10 14:30:00  False            150.0          101
+# 1          DE         Anna Schmidt  female   34    1989-07-22 2025-01-11 16:45:00   True            200.0          201
+# 2          IT          Marco Rossi    male   45    1979-11-05 2025-01-09 10:15:00  False            180.0          102
+# 3          AT         Laura Gruber  female   28    1996-02-19 2025-01-12 09:00:00  False            165.0          202
+# 4          CH         David Müller    male   37    1987-08-30 2025-01-08 17:20:00   True            210.0          203
+# 5          NL  Sophie van den Berg  female   22    2002-04-12 2025-01-10 12:00:00  False            140.0          103
+# 6          GB         James Carter    male   31    1992-09-10 2025-01-11 11:30:00  False            155.0          204
+# 7          BE        Lotte Peeters  female   26    1998-05-25 2025-01-09 15:45:00  False            160.0          201
+# 8          DK        Anders Jensen    male   33    1990-12-03 2025-01-12 08:15:00   True            220.0          202
+# 9          ES         Carlos Lopez    male   38    1985-06-14 2025-01-10 18:00:00  False            170.0          203
 ```
 
 4. Create your first multi-table mock dataset
@@ -82,7 +82,7 @@ tables = {
     "customers": {
         "prompt": "Customers of a hardware store",
         "columns": {
-            "customer_id": {"prompt": "the unique id of the customer", "dtype": "integer"},
+            "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
             "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
         },
         "primary_key": "customer_id",
@@ -90,7 +90,7 @@ tables = {
     "warehouses": {
         "prompt": "Warehouses of a hardware store",
         "columns": {
-            "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "integer"},
+            "warehouse_id": {"prompt": "the unique id of the warehouse", "dtype": "string"},
             "name": {"prompt": "the name of the warehouse", "dtype": "string"},
         },
         "primary_key": "warehouse_id",
@@ -98,8 +98,8 @@ tables = {
     "orders": {
         "prompt": "Orders of a Customer",
         "columns": {
-            "customer_id": {"prompt": "the customer id for that order", "dtype": "integer"},
-            "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "integer"},
+            "customer_id": {"prompt": "the customer id for that order", "dtype": "string"},
+            "warehouse_id": {"prompt": "the warehouse id for that order", "dtype": "string"},
             "order_id": {"prompt": "the unique id of the order", "dtype": "string"},
             "text": {"prompt": "order text description", "dtype": "string"},
             "amount": {"prompt": "order amount in USD", "dtype": "float"},
@@ -132,40 +132,42 @@ tables = {
                 "prompt": "each order has between 1 and 2 items",
             }
         ],
+        "primary_key": "item_id",
     },
 }
 data = mock.sample(
     tables=tables,
     sample_size=2,
-    model="openai/gpt-4.1"
+    model="openai/gpt-4.1",
+    n_workers=1,
 )
 print(data["customers"])
-#    customer_id             name
-# 0            1  Matthew Carlson
-# 1            2       Priya Shah
+#   customer_id             name
+# 0   B0-100235  Danielle Rogers
+# 1   B0-100236       Edward Kim
 print(data["warehouses"])
-#    warehouse_id                        name
-# 0             1    Central Distribution Hub
-# 1             2  Northgate Storage Facility
+#   warehouse_id                          name
+# 0       B0-001  Downtown Distribution Center
+# 1       B0-002     Westside Storage Facility
 print(data["orders"])
-#    customer_id  warehouse_id   order_id                                               text  amount
-# 0            1             2  ORD-10294  3-tier glass shelving units, expedited deliver...  649.25
-# 1            1             1  ORD-10541  Office desk chairs, set of 6, with assembly se...   824.9
-# 2            1             1  ORD-10802  Executive standing desk, walnut finish, standa...   519.0
-# 3            2             1  ORD-11017  Maple conference table, cable management inclu...  1225.5
-# 4            2             2  ORD-11385  Set of ergonomic task chairs, black mesh, stan...  767.75
+#   customer_id warehouse_id    order_id                                               text   amount
+# 0   B0-100235       B0-002  B0-3010021  Office furniture replenishment - desks, chairs...  1268.35
+# 1   B0-100235       B0-001  B0-3010022  Bulk stationery order: printer paper, notebook...    449.9
+# 2   B0-100235       B0-001  B0-3010023  Electronics restock: monitors and wireless key...    877.6
+# 3   B0-100236       B0-001  B1-3010021  Monthly cleaning supplies: disinfectant, trash...   314.75
+# 4   B0-100236       B0-002  B1-3010022  Breakroom essentials restock: coffee, tea, and...   182.45
 print(data["items"])
-#      item_id   order_id                                        name   price
-# 0  ITM-80265  ORD-10294         3-Tier Tempered Glass Shelving Unit   409.0
-# 1  ITM-80266  ORD-10294  Brushed Aluminum Shelf Brackets (Set of 4)  240.25
-# 2  ITM-81324  ORD-10541              Ergonomic Mesh-Back Desk Chair   132.5
-# 3  ITM-81325  ORD-10541  Professional Office Chair Assembly Service    45.0
-# 4  ITM-82101  ORD-10802      Executive Standing Desk, Walnut Finish   469.0
-# 5  ITM-82102  ORD-10802         Desk Installation and Setup Service    50.0
-# 6  ITM-83391  ORD-11017             Maple Conference Table, 10-Seat  1125.5
-# 7  ITM-83392  ORD-11017       Integrated Table Cable Management Kit   100.0
-# 8  ITM-84311  ORD-11385            Ergonomic Task Chair, Black Mesh  359.25
-# 9  ITM-84312  ORD-11385                   Standard Delivery Service    48.5
+#      item_id    order_id                                   name   price
+# 0  B0-200501  B0-3010021                  Ergonomic Office Desk  545.99
+# 1  B0-200502  B0-3010021              Mesh Back Executive Chair   399.5
+# 2  B1-200503  B0-3010022   Multipack Printer Paper (500 sheets)  129.95
+# 3  B1-200504  B0-3010022             Spiral Notebooks - 12 Pack   59.99
+# 4  B2-200505  B0-3010023               27" LED Computer Monitor  489.95
+# 5  B2-200506  B0-3010023            Wireless Ergonomic Keyboard  387.65
+# 6  B3-200507  B1-3010021  Industrial Disinfectant Solution (5L)  148.95
+# 7  B3-200508  B1-3010021  Commercial Trash Liners - Case of 100    84.5
+# 8  B4-200509  B1-3010022        Premium Ground Coffee (2lb Bag)   74.99
+# 9  B4-200510  B1-3010022         Bottled Spring Water (24 Pack)   34.95
 ```
 
 6. Create your first self-referencing mock table
@@ -177,9 +179,9 @@ tables = {
     "employees": {
         "prompt": "Employees of a company",
         "columns": {
-            "employee_id": {"prompt": "the unique id of the employee", "dtype": "integer"},
+            "employee_id": {"prompt": "the unique id of the employee; sequential", "dtype": "string"},
             "name": {"prompt": "first name and last name of the president", "dtype": "string"},
-            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "integer"},
+            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "string"},
             "role": {"prompt": "the role of the employee", "dtype": "string"},
         },
         "primary_key": "employee_id",
@@ -192,19 +194,19 @@ tables = {
         ],
     }
 }
-df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1")
+df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1", n_workers=1)
 print(df)
-#    employee_id             name  boss_id                      role
-# 0            1  Sandra Phillips     <NA>                 President
-# 1            2      Marcus Tran        1   Chief Financial Officer
-# 2            3    Ava Whittaker        1  Chief Technology Officer
-# 3            4    Sophie Martin        1  Chief Operations Officer
-# 4            5      Chad Nelson        2           Finance Manager
-# 5            6     Ethan Glover        2         Senior Accountant
-# 6            7   Kimberly Ortiz        2         Junior Accountant
-# 7            8     Lucas Romero        3                IT Manager
-# 8            9      Priya Desai        3    Lead Software Engineer
-# 9           10    Felix Bennett        3    Senior Systems Analyst
+#   employee_id              name boss_id                   role
+# 0        B0-1      Patricia Lee    <NA>              President
+# 1        B0-2  Edward Rodriguez    B0-1       VP of Operations
+# 2        B0-3      Maria Cortez    B0-1          VP of Finance
+# 3        B0-4     Thomas Nguyen    B0-1       VP of Technology
+# 4        B0-5        Rachel Kim    B0-2     Operations Manager
+# 5        B0-6     Jeffrey Patel    B0-2      Supply Chain Lead
+# 6        B0-7      Olivia Smith    B0-2  Facilities Supervisor
+# 7        B0-8      Brian Carter    B0-3     Accounting Manager
+# 8        B0-9   Lauren Anderson    B0-3      Financial Analyst
+# 9       B0-10   Santiago Romero    B0-3     Payroll Specialist
 ```
 
 7. Enrich existing data with additional columns
@@ -236,10 +238,10 @@ df = mock.sample(
     model="openai/gpt-4.1-nano"
 )
 print(df)
-#    guest_id           name nationality  gender  age  room_number is_vip
-# 0         1   Anna Schmidt          DE  female   29          101   True
-# 1         2    Marco Rossi          IT    male   34          102  False
-# 2         3  Sophie Dupont          FR  female   27          103  False
+#   guest_id           name nationality  gender  age  room_number is_vip
+# 0        1   Anna Schmidt          DE  female   30          102  False
+# 1        2    Marco Rossi          IT    male   27          215   True
+# 2        3  Sophie Dupont          FR  female   22          108  False
 ```
 
 ## MCP Server

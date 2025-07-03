@@ -32,7 +32,7 @@ def test_single_table():
         "guests": {
             "prompt": "Guests of an Alpine ski hotel in Austria",
             "columns": {
-                "guest_id": {"prompt": "the unique id of the guest", "dtype": "integer"},
+                "guest_id": {"prompt": "the unique id of the guest", "dtype": "string"},
                 "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
                 "gender": {"dtype": "category", "values": ["male", "female"]},
@@ -54,7 +54,7 @@ def test_single_table():
         df = mock.sample(tables=tables, sample_size=5)
         assert df.shape == (5, 10)
         assert df.dtypes.to_dict() == {
-            "guest_id": "int64[pyarrow]",
+            "guest_id": "string[pyarrow]",
             "nationality": "string[pyarrow]",
             "name": "string[pyarrow]",
             "gender": pd.CategoricalDtype(categories=["male", "female"]),

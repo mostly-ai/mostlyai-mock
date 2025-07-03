@@ -16,16 +16,16 @@ import os
 import tempfile
 
 import pandas as pd
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
-from mostlyai import mock
+from mostlyai.mock.core import _asample
 
 SAMPLE_MOCK_TOOL_DESCRIPTION = f"""
 Synthetic Mock Data.
 
 Use LLMs to generate any Tabular Data towards your needs. Create from scratch, expand existing datasets, or enrich tables with new columns.
 
-This tool is a proxy to the `mostlyai.mock.sample` function, but returns a dictionary of paths to the generated CSV files.
+This tool is a proxy to the `mostlyai.mock.core._asample` function, but returns a dictionary of paths to the generated CSV files.
 
 Present the result nicely to the user, in Markdown format. Example:
 
@@ -33,8 +33,8 @@ Mock data can be found under the following paths:
 - `/tmp/tmpl41bwa6n/players.csv`
 - `/tmp/tmpl41bwa6n/seasons.csv`
 
-== mostlyai.mock.sample DocString ==
-{mock.sample.__doc__}
+== mostlyai.mock.core._asample docstring ==
+{_asample.__doc__}
 """
 
 mcp = FastMCP(name="MostlyAI Mock MCP Server")
@@ -51,7 +51,8 @@ def _store_locally(data: dict[str, pd.DataFrame]) -> dict[str, str]:
 
 
 @mcp.tool(description=SAMPLE_MOCK_TOOL_DESCRIPTION)
-def mock_data(
+async def mock_data(
+    ctx: Context,
     *,
     tables: dict[str, dict],
     sample_size: int,
@@ -60,7 +61,7 @@ def mock_data(
     temperature: float = 1.0,
     top_p: float = 0.95,
 ) -> dict[str, str]:
-    data = mock.sample(
+    data = await _asample(
         tables=tables,
         sample_size=sample_size,
         model=model,
@@ -68,6 +69,7 @@ def mock_data(
         temperature=temperature,
         top_p=top_p,
         return_type="dict",
+        progress_callback=ctx.report_progress,
     )
     locations = _store_locally(data)
     return locations
