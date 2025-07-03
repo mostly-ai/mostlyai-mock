@@ -288,8 +288,7 @@ appropriate content. For dates and timestamps, ensure logical chronology. Always
 across tables.
 
 When enriching existing data, carefully analyze the patterns and relationships in the existing columns \
-to generate compatible and realistic values for the missing columns.
-"""  # If you do not add to this prompt, the ending newline should be removed.
+to generate compatible and realistic values for the missing columns."""
 
 
 def _create_table_prompt(
