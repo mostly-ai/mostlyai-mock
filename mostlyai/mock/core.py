@@ -809,7 +809,8 @@ async def _create_table_rows_generator(
     # calculate ideal batch size to spread the workload evenly across workers
     ideal_batch_size = max(math.ceil(sample_size / n_workers), 5)
     if ideal_batch_size < batch_size:
-        # never increase batch_size beyond initial value (especially important for sequential tables)
+        # never increase batch_size beyond initial value
+        # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
         batch_size = ideal_batch_size
 
     # calculate batch_sizes
