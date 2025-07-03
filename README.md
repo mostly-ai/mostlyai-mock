@@ -194,7 +194,7 @@ tables = {
         ],
     }
 }
-df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1")
+df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1", n_workers=1)
 print(df)
 #   employee_id              name boss_id                   role
 # 0        B0-1      Patricia Lee    <NA>              President
