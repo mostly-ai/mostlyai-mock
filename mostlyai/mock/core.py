@@ -1184,6 +1184,7 @@ def sample(
 
     Args:
         tables (dict[str, dict]): The table specifications to generate mock data for. See examples for usage.
+            Note: Avoid using double quotes (`"`) and other special characters in column names.
         sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
             If a single integer is provided, the same number of rows will be generated for each subject table.
             If a dictionary is provided, the number of rows to generate for each subject table can be specified individually.
