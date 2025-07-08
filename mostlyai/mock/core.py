@@ -1179,7 +1179,7 @@ def sample(
     or the enrichment of existing datasets with new, context-aware columns.
 
     It is particularly useful for quickly simulating production-like datasets for testing or prototyping purposes.
-    It is advised to limit mocking to small datasets for performance reasons (rows * cols < 100).
+    It is advised to limit mocking to small datasets for performance reasons (rows * cols < 1000).
     It might take a couple of minutes for bigger datasets.
 
     Args:
