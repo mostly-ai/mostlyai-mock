@@ -29,18 +29,16 @@ dependencies = [
     "pandas>=2.0.0",
     "pyarrow>=14.0.0",
     "litellm>=1.67.0",
-    "fastmcp>=2.0.0,<3.0.0",
     "tenacity>=9.1.2",
-    "backoff>=2.0.0",  # for litellm proxy communication; "litellm[proxy]>=1.67.0" is not compatible with "fastmcp>=2.0.0,<3.0.0"
 ]
 
-[project.scripts]
-mcp-server = "mostlyai.mock.mcp_server:main"
-
-[project.urls]
-homepage = "https://github.com/mostly-ai/mostlyai-mock"
-repository = "https://github.com/mostly-ai/mostlyai-mock"
-documentation = "https://mostly-ai.github.io/mostlyai-mock/"
+[project.optional-dependencies]
+litellm-proxy = [
+    "litellm[proxy]>=1.67.0",
+]
+mcp = [
+    "fastmcp>=2.0.0,<3.0.0",
+]
 
 [dependency-groups]
 dev = [
@@ -61,8 +59,23 @@ docs = [
     "black>=25.0",
 ]
 
+[project.scripts]
+mcp-server = "mostlyai.mock.mcp_server:main"
+
+[project.urls]
+homepage = "https://github.com/mostly-ai/mostlyai-mock"
+repository = "https://github.com/mostly-ai/mostlyai-mock"
+documentation = "https://mostly-ai.github.io/mostlyai-mock/"
+
 [tool.uv]
 default-groups = ["dev", "docs"]
+conflicts = [
+    [
+        # fastmcp and litellm[proxy] have conflicting dependencies
+        { extra = "litellm-proxy" },
+        { extra = "mcp" },
+    ]
+]
 
 [tool.hatch.build.targets.sdist]
 include = ["mostlyai/mock"]
