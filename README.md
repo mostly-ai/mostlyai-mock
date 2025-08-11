@@ -250,18 +250,18 @@ This repo comes with MCP Server. It can be easily consumed by any MCP Client by 
 
 ```json
 {
-  "mcpServers": {
-      "mostlyai-mock-mcp": {
-          "command": "uvx",
-          "args": ["--from", "mostlyai-mock[mcp]", "mcp-server"],
-          "env": {
-              "OPENAI_API_KEY": "PROVIDE YOUR KEY",
-              "GEMINI_API_KEY": "PROVIDE YOUR KEY",
-              "GROQ_API_KEY": "PROVIDE YOUR KEY",
-              "ANTHROPIC_API_KEY": "PROVIDE YOUR KEY"
-          }
-      }
-  }
+    "mcpServers": {
+        "mostlyai-mock-mcp": {
+            "command": "uvx",
+            "args": ["--from", "mostlyai-mock[mcp]", "mcp-server"],
+            "env": {
+                "OPENAI_API_KEY": "PROVIDE YOUR KEY",
+                "GEMINI_API_KEY": "PROVIDE YOUR KEY",
+                "GROQ_API_KEY": "PROVIDE YOUR KEY",
+                "ANTHROPIC_API_KEY": "PROVIDE YOUR KEY"
+            }
+        }
+    }
 }
 ```
 
