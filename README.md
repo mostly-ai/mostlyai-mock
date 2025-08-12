@@ -250,18 +250,18 @@ This repo comes with MCP Server. It can be easily consumed by any MCP Client by 
 
 ```json
 {
-  "mcpServers": {
-      "mostlyai-mock-mcp": {
-          "command": "uvx",
-          "args": ["--from", "mostlyai-mock", "mcp-server"],
-          "env": {
-              "OPENAI_API_KEY": "PROVIDE YOUR KEY",
-              "GEMINI_API_KEY": "PROVIDE YOUR KEY",
-              "GROQ_API_KEY": "PROVIDE YOUR KEY",
-              "ANTHROPIC_API_KEY": "PROVIDE YOUR KEY"
-          }
-      }
-  }
+    "mcpServers": {
+        "mostlyai-mock-mcp": {
+            "command": "uvx",
+            "args": ["--from", "mostlyai-mock[mcp]", "mcp-server"],
+            "env": {
+                "OPENAI_API_KEY": "PROVIDE YOUR KEY",
+                "GEMINI_API_KEY": "PROVIDE YOUR KEY",
+                "GROQ_API_KEY": "PROVIDE YOUR KEY",
+                "ANTHROPIC_API_KEY": "PROVIDE YOUR KEY"
+            }
+        }
+    }
 }
 ```
 
@@ -271,5 +271,5 @@ For example:
 
 Troubleshooting:
 1. If the MCP Client fails to detect the MCP Server, provide the absolute path in the `command` field, for example: `/Users/johnsmith/.local/bin/uvx`
-2. To debug MCP Server issues, you can use MCP Inspector by running: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock mcp-server`
-3. In order to develop locally, modify the configuration by replacing `"command": "uv"` (or use the full path to `uv` if needed) and `"args": ["--directory", "/Users/johnsmith/mostlyai-mock", "run", "mcp-server"]`
+2. To debug MCP Server issues, you can use MCP Inspector by running: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock[mcp] mcp-server`
+3. In order to develop locally, modify the configuration by replacing `"command": "uv"` (or use the full path to `uv` if needed) and `"args": ["--directory", "/Users/johnsmith/mostlyai-mock", "run", "--extra", "mcp", "mcp-server"]`
