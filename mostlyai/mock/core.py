@@ -248,6 +248,7 @@ async def _sample_table(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    llm_callback=None,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
@@ -262,6 +263,7 @@ async def _sample_table(
         non_context_size=non_context_size,
         n_workers=n_workers,
         llm_config=llm_config,
+        llm_callback=llm_callback,
         progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
@@ -476,22 +478,44 @@ def _create_table_prompt(
     return prompt
 
 
-def _completion_with_retries(*args, **kwargs):
+async def _completion_with_retries(*args, llm_callback=None, **kwargs):
     n_attempts = 3
 
     def print_on_retry(_):
         print(" * Calling LLM again... * ", end="", flush=True)
 
+    # Force non-streaming when callback provided (for usage data)
+    if llm_callback:
+        kwargs = kwargs.copy()
+        kwargs["stream"] = False
+
     # try up to 3 times, print a message to the user on each retry
     retryer = tenacity.AsyncRetrying(
         stop=tenacity.stop_after_attempt(n_attempts), reraise=True, before_sleep=print_on_retry
     )
-    return retryer(litellm.acompletion, *args, **kwargs)
+    response = await retryer(litellm.acompletion, *args, **kwargs)
+    if llm_callback:
+        llm_callback(response)
+    return response
 
 
-async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrapper) -> AsyncGenerator[dict]:
+async def _yield_rows_from_json_chunks_stream(response) -> AsyncGenerator[dict]:
     def buffer_to_row(buffer: list[str]) -> dict:
         return json.loads("".join(buffer))
+
+    # Handle non-streaming responses (when callback is provided)
+    if hasattr(response, "choices") and not hasattr(response, "__aiter__"):
+        content = response.choices[0].message.content
+        try:
+            data = json.loads(content)
+            if "rows" in data:
+                for row in data["rows"]:
+                    yield row
+            else:
+                yield data
+        except json.JSONDecodeError:
+            pass
+        return
 
     # starting with dirty buffer is to handle the `{"rows": []}` case
     buffer = list("garbage")
@@ -606,6 +630,7 @@ async def _worker(
     n_workers: int,
     llm_output_format: LLMOutputFormat,
     llm_config: LLMConfig,
+    llm_callback=None,
 ):
     try:
         while True:
@@ -666,7 +691,10 @@ async def _worker(
             if generated_columns:
                 # make LLM call
                 response = await _completion_with_retries(
-                    messages=messages, response_format=structured_output_schema, **litellm_kwargs
+                    messages=messages,
+                    response_format=structured_output_schema,
+                    llm_callback=llm_callback,
+                    **litellm_kwargs,
                 )
                 yield_rows_from_chunks_stream = {
                     LLMOutputFormat.JSON: _yield_rows_from_json_chunks_stream,
@@ -762,6 +790,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    llm_callback=None,
     progress_callback: Callable | None = None,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
@@ -877,6 +906,7 @@ async def _create_table_rows_generator(
                 n_workers=n_workers,
                 llm_output_format=llm_output_format,
                 llm_config=llm_config,
+                llm_callback=llm_callback,
             )
         )
         for _ in range(n_workers)
@@ -1122,6 +1152,7 @@ async def _sample_common(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    llm_callback=None,
     progress_callback: Callable | None = None,
 ):
     tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
@@ -1152,6 +1183,7 @@ async def _sample_common(
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             n_workers=n_workers,
             llm_config=llm_config,
+            llm_callback=llm_callback,
             progress_callback=progress_callback,
         )
         data[table_name] = df
@@ -1170,6 +1202,7 @@ def sample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    llm_callback=None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1403,6 +1436,7 @@ def sample(
             top_p=top_p,
             n_workers=n_workers,
             return_type=return_type,
+            llm_callback=llm_callback,
             progress_callback=None,
         )
         return future.result()
@@ -1419,6 +1453,7 @@ async def _asample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    llm_callback=None,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     return await _sample_common(
@@ -1431,6 +1466,7 @@ async def _asample(
         top_p=top_p,
         n_workers=n_workers,
         return_type=return_type,
+        llm_callback=llm_callback,
         progress_callback=progress_callback,
     )
 
