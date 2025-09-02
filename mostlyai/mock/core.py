@@ -645,10 +645,23 @@ async def _worker(
                 "stream": True,
             }
 
-            # support for openai gpt-5 family
-            if llm_config.model.startswith("openai/gpt-5"):
-                litellm_kwargs.pop("top_p", None)
-                litellm_kwargs["reasoning_effort"] = "minimal"
+            # support for openai reasoning models
+            model_only = llm_config.model.split("/")[-1] if "/" in llm_config.model else llm_config.model
+            reasoning_effort = (
+                "low"
+                if (model_only.startswith("o") and (model_only[1:].isdigit() or model_only[1:].split("-")[0].isdigit()))
+                else "minimal"
+                if (
+                    model_only.startswith("gpt-")
+                    and model_only.split("-")[1].isdigit()
+                    and int(model_only.split("-")[1]) >= 5
+                )
+                else None
+            )
+
+            if reasoning_effort:
+                litellm_kwargs.pop("top_p")
+                litellm_kwargs["reasoning_effort"] = reasoning_effort
 
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
