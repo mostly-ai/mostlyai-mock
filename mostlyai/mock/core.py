@@ -645,6 +645,11 @@ async def _worker(
                 "stream": True,
             }
 
+            # support for openai gpt-5 family
+            if llm_config.model.startswith("openai/gpt-5"):
+                litellm_kwargs.pop("top_p", None)
+                litellm_kwargs["reasoning_effort"] = "minimal"
+
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
             user_prompt = _create_table_prompt(
