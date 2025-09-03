@@ -57,7 +57,7 @@ tables = {
 df = mock.sample(
     tables=tables,   # provide table and column definitions
     sample_size=10,  # generate 10 records
-    model="openai/gpt-4.1-nano",  # select the LLM model (optional)
+    model="openai/gpt-5-nano",  # select the LLM model (optional)
 )
 print(df)
 #   nationality                 name  gender  age date_of_birth        checkin_time is_vip  price_per_night  room_number
@@ -138,7 +138,7 @@ tables = {
 data = mock.sample(
     tables=tables,
     sample_size=2,
-    model="openai/gpt-4.1",
+    model="openai/gpt-5",
     n_workers=1,
 )
 print(data["customers"])
@@ -194,7 +194,7 @@ tables = {
         ],
     }
 }
-df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1", n_workers=1)
+df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-5", n_workers=1)
 print(df)
 #   employee_id              name boss_id                   role
 # 0        B0-1      Patricia Lee    <NA>              President
@@ -235,7 +235,7 @@ existing_guests = pd.DataFrame({
 df = mock.sample(
     tables=tables,
     existing_data={"guests": existing_guests},
-    model="openai/gpt-4.1-nano"
+    model="openai/gpt-5-nano"
 )
 print(df)
 #   guest_id           name nationality  gender  age  room_number is_vip
