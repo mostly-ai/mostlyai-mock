@@ -1134,7 +1134,7 @@ async def _sample_common(
     tables: dict[str, dict],
     sample_size: int | dict[str, int] = 4,
     existing_data: dict[str, pd.DataFrame] | None = None,
-    model: str = "openai/gpt-4.1-nano",
+    model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
@@ -1182,7 +1182,7 @@ def sample(
     tables: dict[str, dict],
     sample_size: int | dict[str, int] = 4,
     existing_data: dict[str, pd.DataFrame] | None = None,
-    model: str = "openai/gpt-4.1-nano",
+    model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
@@ -1212,9 +1212,9 @@ def sample(
             Default is None.
         model (str): The LiteLLM chat completion model to be used.
             Examples include:
-            - `openai/gpt-4.1-nano` (default; fast, and smart)
-            - `openai/gpt-4.1-mini` (slower, but smarter)
-            - `openai/gpt-4.1` (slowest, but smartest)
+            - `openai/gpt-5-nano` (default; fast, and smart)
+            - `openai/gpt-5-mini` (slower, but smarter)
+            - `openai/gpt-5` (slowest, but smartest)
             - `gemini/gemini-2.0-flash`
             - `gemini/gemini-2.5-flash-preview-04-17`
             - 'groq/gemma2-9b-it`
@@ -1252,7 +1252,7 @@ def sample(
             },
         }
     }
-    df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-4.1-nano")
+    df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-5-nano")
     ```
 
     Example of generating mock data for multiple tables (with PK/FK relationships):
@@ -1315,7 +1315,7 @@ def sample(
             ],
         },
     }
-    data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4.1")
+    data = mock.sample(tables=tables, sample_size=2, model="openai/gpt-5")
     df_customers = data["customers"]
     df_warehouses = data["warehouses"]
     df_orders = data["orders"]
@@ -1344,7 +1344,7 @@ def sample(
     enriched_df = mock.sample(
         tables=tables,
         existing_data={"patients": existing_df},
-        model="openai/gpt-4.1-nano"
+        model="openai/gpt-5-nano"
     )
     enriched_df
     ```
@@ -1399,7 +1399,7 @@ def sample(
             "customers": existing_customers,
             "orders": existing_orders,
         },
-        model="openai/gpt-4.1-nano"
+        model="openai/gpt-5-nano"
     )
     df_customers = data["customers"]
     df_orders = data["orders"]
@@ -1431,7 +1431,7 @@ async def _asample(
     tables: dict[str, dict],
     sample_size: int | dict[str, int] = 4,
     existing_data: dict[str, pd.DataFrame] | None = None,
-    model: str = "openai/gpt-4.1-nano",
+    model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,

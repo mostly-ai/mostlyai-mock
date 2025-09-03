@@ -56,7 +56,7 @@ async def mock_data(
     *,
     tables: dict[str, dict],
     sample_size: int,
-    model: str = "openai/gpt-4.1-nano",
+    model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
