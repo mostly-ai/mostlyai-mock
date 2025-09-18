@@ -9,7 +9,8 @@ Use LLMs to generate any Tabular Data towards your needs. Create from scratch, e
 * A light-weight python client for prompting LLMs for mixed-type tabular data.
 * Select from a wide range of LLM endpoints and LLM models.
 * Supports single-table as well as multi-table scenarios.
-* Supports variety of data types: `string`, `categorical`, `integer`, `float`, `boolean`, `date`, and `datetime`.
+* Supports variety of data types: `string`, `categorical`, `integer`, `float`, `boolean`, `date`, `datetime`, and `image`.
+* Generate synthetic images linked to mock entities using AI image generation services.
 * Specify context, distributions and rules via dataset-, table- or column-level prompts.
 * Create from scratch or enrich existing datasets with new columns and/or rows.
 * Tailor the diversity and realism of your generated data via temperature and top_p.
@@ -243,6 +244,54 @@ print(df)
 # 1        2    Marco Rossi          IT    male   27          215   True
 # 2        3  Sophie Dupont          FR  female   22          108  False
 ```
+
+8. Generate synthetic images alongside tabular data
+
+```python
+from mostlyai import mock
+
+tables = {
+    "guests": {
+        "prompt": "Guests of an Alpine ski hotel in Austria",
+        "columns": {
+            "guest_id": {"prompt": "the unique id of the guest", "dtype": "string"},
+            "name": {"prompt": "first name and last name of the guest", "dtype": "string"},
+            "nationality": {"prompt": "2-letter code for the nationality", "dtype": "string"},
+            "age": {"prompt": "age in years; min: 18, max: 80; avg: 35", "dtype": "integer"},
+            "profile_photo": {
+                "prompt": "A professional headshot photo of the guest suitable for hotel ID purposes",
+                "dtype": "image",
+                "image_model": "openai/dall-e-3",
+                "image_size": "512x512",
+                "output_dir": "generated_images/guests"
+            },
+            "room_photo": {
+                "prompt": "A photo of the guest's luxury hotel room with Alpine mountain views",
+                "dtype": "image", 
+                "image_model": "openai/dall-e-3",
+                "image_size": "1024x1024"
+            }
+        },
+        "primary_key": "guest_id",
+    }
+}
+df = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4o-mini")
+print(df)
+#   guest_id              name nationality  age                                      profile_photo                                         room_photo
+# 0  B0-G001    Franz Müller          AT   42  generated_images/guests_2025-01-15_14-30-22/B0-G001_profile_photo.png  generated_images/guests_2025-01-15_14-30-22/B0-G001_room_photo.png
+# 1  B0-G002  Sophie Dubois          FR   28  generated_images/guests_2025-01-15_14-30-22/B0-G002_profile_photo.png  generated_images/guests_2025-01-15_14-30-22/B0-G002_room_photo.png
+
+# The actual image files are saved to disk with organized folder structure
+# Image generation uses the column prompt combined with context from other columns
+```
+
+### Image Generation Features
+
+- **Multiple AI Services**: Support for OpenAI DALL-E 3, Stability AI, and other image generation models
+- **Contextual Generation**: Images are generated using both the column prompt and context from other row data
+- **Organized Storage**: Images are automatically saved in timestamped folders with descriptive filenames
+- **Flexible Configuration**: Control image model, size, and output directory per column
+- **Seamless Integration**: Image columns work alongside all other data types in multi-table scenarios
 
 ## MCP Server
 

@@ -33,6 +33,14 @@ from tqdm.asyncio import tqdm
 
 litellm.suppress_debug_info = True
 
+# Import image generation functionality  
+try:
+    from mostlyai.mock.image_generator import ImageGenerator
+    _IMAGE_GENERATION_AVAILABLE = True
+except ImportError:
+    ImageGenerator = None
+    _IMAGE_GENERATION_AVAILABLE = False
+
 
 class LLMOutputFormat(str, Enum):
     JSON = "JSON"
@@ -168,6 +176,10 @@ class ColumnConfig(BaseModel):
     prompt: str = ""
     dtype: DType
     values: list[Any] = Field(default_factory=list)
+    # Image-specific parameters
+    image_model: str | None = None
+    image_size: str = "1024x1024"
+    output_dir: str = "generated_images"
 
     @model_validator(mode="before")
     def set_default_dtype(cls, data):
@@ -209,6 +221,7 @@ class ColumnConfig(BaseModel):
                 DType.BOOLEAN: (bool, "booleans"),
                 DType.DATE: (str, "strings"),
                 DType.DATETIME: (str, "strings"),
+                DType.IMAGE: (str, "strings"),  # Image file paths are strings
             }[self.dtype]
             try:
                 self.values = [cast_fn(c) if pd.notna(c) else None for c in self.values]
@@ -216,6 +229,19 @@ class ColumnConfig(BaseModel):
                 raise ValueError(
                     f"All values must be convertible to {convertible_to} when dtype is '{self.dtype.value}'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_image_configuration(self) -> ColumnConfig:
+        if self.dtype == DType.IMAGE:
+            if not self.image_model:
+                # Set default image model if not specified
+                self.image_model = "openai/dall-e-3"
+            if not self.prompt:
+                raise ValueError("Image columns must have a prompt for image generation")
+            # Validate image size format
+            if self.image_size and "x" not in self.image_size:
+                raise ValueError("image_size must be in format 'widthxheight' (e.g., '1024x1024')")
         return self
 
 
@@ -227,6 +253,7 @@ class DType(str, Enum):
     BOOLEAN = "boolean"
     DATE = "date"
     DATETIME = "datetime"
+    IMAGE = "image"
 
 
 class ForeignKeyConfig(BaseModel):
@@ -250,22 +277,58 @@ async def _sample_table(
     llm_config: LLMConfig,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
-    table_rows_generator = _create_table_rows_generator(
-        name=name,
-        prompt=prompt,
-        columns=columns,
-        primary_keys=primary_keys,
-        foreign_keys=foreign_keys,
-        data=data,
-        sample_size=sample_size,
-        previous_rows_size=previous_rows_size,
-        non_context_size=non_context_size,
-        n_workers=n_workers,
-        llm_config=llm_config,
-        progress_callback=progress_callback,
-    )
-    table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    # Separate image columns from regular columns
+    image_columns = {k: v for k, v in columns.items() if v.dtype == DType.IMAGE}
+    text_columns = {k: v for k, v in columns.items() if v.dtype != DType.IMAGE}
+    
+    # Generate text data first
+    if text_columns:
+        table_rows_generator = _create_table_rows_generator(
+            name=name,
+            prompt=prompt,
+            columns=text_columns,
+            primary_keys=primary_keys,
+            foreign_keys=foreign_keys,
+            data=data,
+            sample_size=sample_size,
+            previous_rows_size=previous_rows_size,
+            non_context_size=non_context_size,
+            n_workers=n_workers,
+            llm_config=llm_config,
+            progress_callback=progress_callback,
+        )
+        table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
+        table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=text_columns)
+    else:
+        # If only image columns, create empty dataframe with the right number of rows
+        assert sample_size is not None, "sample_size must be provided when generating only image columns"
+        table_df = pd.DataFrame(index=range(sample_size))
+    
+    # Generate images if there are image columns
+    if image_columns and _IMAGE_GENERATION_AVAILABLE:
+        print(f"Generating images for table `{name}`...")
+        image_generator = ImageGenerator()
+        table_df = await image_generator.generate_images_for_dataframe(
+            df=table_df,
+            table_name=name,
+            image_columns=image_columns,
+            primary_key=primary_keys.get(name)
+        )
+        
+        # Ensure proper dtype alignment for image columns
+        for col_name, col_config in image_columns.items():
+            if col_name in table_df.columns:
+                table_df[col_name] = _align_series_dtypes_with_column_config(table_df[col_name], col_config)
+    elif image_columns and not _IMAGE_GENERATION_AVAILABLE:
+        print(f"Warning: Image generation requested for table `{name}` but image generation dependencies not available. Skipping image generation.")
+        # Add placeholder columns for image columns
+        for col_name in image_columns:
+            table_df[col_name] = None
+    
+    # Ensure columns are in the original order specified by user
+    original_column_order = list(columns.keys())
+    table_df = table_df.reindex(columns=original_column_order)
+    
     return table_df
 
 
@@ -969,6 +1032,9 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
         series = pd.to_numeric(series, errors="coerce").astype("boolean[pyarrow]")
     elif column_config.dtype is DType.CATEGORY:
         series = pd.Categorical(series, categories=column_config.values)
+    elif column_config.dtype is DType.IMAGE:
+        # Images are stored as file paths (strings)
+        series = series.astype("string[pyarrow]")
     else:
         series = series.astype("string[pyarrow]")
     return series
@@ -1007,6 +1073,8 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
         elif pd.api.types.is_bool_dtype(series):
             return DType.BOOLEAN
         else:
+            # Note: Image columns will be inferred as STRING since they contain file paths
+            # Users should explicitly specify dtype="image" for image columns
             return DType.STRING
 
     if existing_data is None:
@@ -1347,6 +1415,33 @@ def sample(
         model="openai/gpt-5-nano"
     )
     enriched_df
+    ```
+
+    Example of generating data with images:
+    ```python
+    from mostlyai import mock
+
+    tables = {
+        "guests": {
+            "prompt": "Guests of an Alpine ski hotel",
+            "columns": {
+                "guest_id": {"dtype": "string"},
+                "name": {"dtype": "string"},
+                "profile_photo": {
+                    "prompt": "Professional headshot photo of the guest",
+                    "dtype": "image",
+                    "image_model": "openai/dall-e-3",
+                    "image_size": "512x512"
+                }
+            },
+            "primary_key": "guest_id"
+        }
+    }
+    df = mock.sample(tables=tables, sample_size=2, model="openai/gpt-4o-mini")
+    print(df)
+    # guest_id        name                            profile_photo
+    # 0     B0-001  John Doe  generated_images/guests_2025-01-15_14-30-22/B0-001_profile_photo.png
+    # 1     B0-002  Jane Doe  generated_images/guests_2025-01-15_14-30-22/B0-002_profile_photo.png
     ```
 
     Example of enriching / augmenting an existing dataset:
