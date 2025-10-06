@@ -109,8 +109,13 @@ def test_auto_increment_with_foreign_keys():
         mock_response = '{"rows": [{"name": "A"}, {"name": "B"}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
-    tables = {"users": {"columns": {"id": {"dtype": "integer", "auto_increment": True}, "name": {"dtype": "string"}}, "primary_key": "id"}}
-    
+    tables = {
+        "users": {
+            "columns": {"id": {"dtype": "integer", "auto_increment": True}, "name": {"dtype": "string"}},
+            "primary_key": "id",
+        }
+    }
+
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         df = mock.sample(tables=tables, sample_size=6, n_workers=3)
         assert sorted(df["id"].tolist()) == list(range(1, 7))
