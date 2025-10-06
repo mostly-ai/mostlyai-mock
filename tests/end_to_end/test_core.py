@@ -101,3 +101,17 @@ def test_existing_data():
         df = mock.sample(tables=tables, existing_data={"guests": existing_guests})
         pd.testing.assert_frame_equal(df, existing_guests, check_dtype=False)
         mock_acompletion.assert_not_called()
+
+
+def test_auto_increment_with_foreign_keys():
+    # test auto-increment integer PKs: 3 workers, 6 rows (mocked)
+    def litellm_completion_with_mock_response(*args, **kwargs):
+        mock_response = '{"rows": [{"name": "A"}, {"name": "B"}]}'
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
+
+    tables = {"users": {"columns": {"id": {"dtype": "integer", "auto_increment": True}, "name": {"dtype": "string"}}, "primary_key": "id"}}
+    
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        df = mock.sample(tables=tables, sample_size=6, n_workers=3)
+        assert sorted(df["id"].tolist()) == list(range(1, 7))
+        assert len(df) == 6

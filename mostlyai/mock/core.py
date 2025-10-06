@@ -78,7 +78,7 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
                 fk_field = table_config.columns[fk.column]
                 pk_field = referenced_config.columns[referenced_config.primary_key]
-                
+
                 # foreign key columns cannot be auto-increment
                 if fk_field.auto_increment:
                     raise ValueError(
@@ -86,7 +86,7 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                         f"Foreign key column '{fk.column}' cannot have auto_increment=True. "
                         f"Foreign keys must reference values from other tables, not generate their own."
                     )
-                
+
                 # foreign key dtype must match primary key dtype
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
@@ -260,12 +260,12 @@ class ForeignKeyConfig(BaseModel):
 
 def _add_auto_increment_values(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
     df = df.copy()
-    
+
     for column_name, column_config in columns.items():
         if column_config.auto_increment:
             # each auto-increment column starts at 1 independently
             df[column_name] = list(range(1, 1 + len(df)))
-    
+
     return df
 
 
