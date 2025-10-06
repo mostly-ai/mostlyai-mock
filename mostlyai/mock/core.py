@@ -249,7 +249,6 @@ class ForeignKeyConfig(BaseModel):
 
 
 def _add_auto_increment_values(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
-    """Add auto_increment values to the dataframe."""
     df = df.copy()
     current_id = 1
     
@@ -1027,10 +1026,8 @@ async def _convert_table_rows_generator_to_df(
     # extract rows and convert to DataFrame
     rows = [item["row"] for item in items]
     df = pd.DataFrame(rows)
-    
     # add auto_increment values after all rows are collected
     df = _add_auto_increment_values(df, columns)
-    
     # harmonize dtypes
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
