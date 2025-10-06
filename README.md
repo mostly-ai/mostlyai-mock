@@ -223,11 +223,6 @@ print(data["orders"])
 # 4         5            3    Fitness Tracker         2
 ```
 
-**Key features:**
-- **Auto-increment integer PKs**: Automatically assigned sequential integers (1, 2, 3...) that guarantee uniqueness
-- **String PKs**: Can be used when you need the LLM to generate custom primary key values (e.g., "CUST-001", "ORD-ABC")
-- **Integer PKs always require auto_increment=True** to ensure unique values
-
 6. Create your first self-referencing mock table
 
 ```python
