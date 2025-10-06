@@ -78,6 +78,16 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
                 fk_field = table_config.columns[fk.column]
                 pk_field = referenced_config.columns[referenced_config.primary_key]
+                
+                # foreign key columns cannot be auto-increment
+                if fk_field.auto_increment:
+                    raise ValueError(
+                        f"Foreign key violation in table '{table_name}': "
+                        f"Foreign key column '{fk.column}' cannot have auto_increment=True. "
+                        f"Foreign keys must reference values from other tables, not generate their own."
+                    )
+                
+                # foreign key dtype must match primary key dtype
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
@@ -250,12 +260,11 @@ class ForeignKeyConfig(BaseModel):
 
 def _add_auto_increment_values(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
     df = df.copy()
-    current_id = 1
     
     for column_name, column_config in columns.items():
         if column_config.auto_increment:
-            df[column_name] = list(range(current_id, current_id + len(df)))
-            current_id += len(df)
+            # each auto-increment column starts at 1 independently
+            df[column_name] = list(range(1, 1 + len(df)))
     
     return df
 
@@ -779,15 +788,9 @@ async def _worker(
                 row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
                 row = {**row_generated_part, **row_existing_part}
                 # keep columns order according to user's spec, but only include columns that exist in the row
-                # auto_increment columns will be added later
+                # auto_increment columns will be added later in _convert_table_rows_generator_to_df
                 row = {column: row[column] for column in columns.keys() if column in row}
                 rows.append(row)
-
-            # add auto_increment values
-            if rows:
-                rows_df = pd.DataFrame(rows)
-                rows_df = _add_auto_increment_values(rows_df, columns)
-                rows = rows_df.to_dict('records')
 
             # track previous rows for improved data consistency, in case of sequential generation
             if n_workers == 1:
