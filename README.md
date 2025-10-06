@@ -170,6 +170,64 @@ print(data["items"])
 # 9  B4-200510  B1-3010022         Bottled Spring Water (24 Pack)   34.95
 ```
 
+5. Create tables with auto-increment integer primary keys
+
+```python
+from mostlyai import mock
+
+tables = {
+    "customers": {
+        "prompt": "Customers of an e-commerce store",
+        "columns": {
+            "customer_id": {"dtype": "integer", "auto_increment": True},
+            "name": {"prompt": "first name and last name", "dtype": "string"},
+            "email": {"prompt": "email address", "dtype": "string"},
+        },
+        "primary_key": "customer_id",
+    },
+    "orders": {
+        "prompt": "Customer orders",
+        "columns": {
+            "order_id": {"dtype": "integer", "auto_increment": True},
+            "customer_id": {"dtype": "integer"},
+            "product_name": {"prompt": "product name", "dtype": "string"},
+            "quantity": {"prompt": "quantity ordered", "dtype": "integer"},
+        },
+        "primary_key": "order_id",
+        "foreign_keys": [
+            {
+                "column": "customer_id",
+                "referenced_table": "customers",
+                "prompt": "each customer has between 1 and 3 orders",
+            },
+        ],
+    },
+}
+data = mock.sample(
+    tables=tables,
+    sample_size=3,
+    model="openai/gpt-4o-mini",
+    n_workers=4,
+)
+print(data["customers"])
+#   customer_id             name                     email
+# 0            1        John Smith       john.smith@example.com
+# 1            2      Emily Johnson    emily.johnson@example.com
+# 2            3   Michael Williams michael.williams@example.com
+print(data["orders"])
+#   order_id  customer_id      product_name  quantity
+# 0         1            1  Wireless Headphones         2
+# 1         2            1    Fitness Tracker         1
+# 2         3            2     Phone Charger         3
+# 3         4            2  Wireless Headphones         1
+# 4         5            3    Fitness Tracker         2
+```
+
+**Key features:**
+- **Auto-increment integer PKs**: Automatically assigned sequential integers (1, 2, 3...) that guarantee uniqueness
+- **String PKs**: Can be used when you need the LLM to generate custom primary key values (e.g., "CUST-001", "ORD-ABC")
+- **Integer PKs always require auto_increment=True** to ensure unique values
+
 6. Create your first self-referencing mock table
 
 ```python

@@ -124,14 +124,20 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         return self
 
     @model_validator(mode="after")
-    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
+    def ensure_primary_key_is_string_or_auto_increment_integer(self) -> MockConfig:
         for table_name, table_config in self.root.items():
             if table_config.primary_key:
                 column_config = table_config.columns[table_config.primary_key]
-                if column_config.dtype not in [DType.STRING]:
+                if column_config.dtype == DType.INTEGER and not column_config.auto_increment:
+                    raise ValueError(
+                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' has integer dtype. "
+                        f"Integer primary keys must have auto_increment=True to guarantee unique values. "
+                        f"Use dtype='string' if you want to manually generate primary key values."
+                    )
+                if column_config.dtype not in [DType.STRING, DType.INTEGER]:
                     raise ValueError(
                         f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
-                        f" {[DType.STRING.value]}"
+                        f" {[DType.STRING.value, DType.INTEGER.value]}"
                     )
         return self
 
@@ -168,6 +174,7 @@ class ColumnConfig(BaseModel):
     prompt: str = ""
     dtype: DType
     values: list[Any] = Field(default_factory=list)
+    auto_increment: bool = False
 
     @model_validator(mode="before")
     def set_default_dtype(cls, data):
@@ -178,6 +185,12 @@ class ColumnConfig(BaseModel):
                 else:
                     data["dtype"] = DType.STRING
         return data
+
+    @model_validator(mode="after")
+    def ensure_auto_increment_is_integer(self) -> ColumnConfig:
+        if self.auto_increment and self.dtype != DType.INTEGER:
+            raise ValueError("auto_increment can only be used with integer dtype")
+        return self
 
     @model_validator(mode="after")
     def ensure_values_are_unique(self) -> ColumnConfig:
@@ -233,6 +246,19 @@ class ForeignKeyConfig(BaseModel):
     column: str
     referenced_table: str
     prompt: str | None = None
+
+
+def _add_auto_increment_values(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
+    """Add auto_increment values to the dataframe."""
+    df = df.copy()
+    current_id = 1
+    
+    for column_name, column_config in columns.items():
+        if column_config.auto_increment:
+            df[column_name] = list(range(current_id, current_id + len(df)))
+            current_id += len(df)
+    
+    return df
 
 
 async def _sample_table(
@@ -624,8 +650,11 @@ async def _worker(
             context_batch = task.get("context_batch")
             non_context_batch = task.get("non_context_batch")
 
-            # resolve columns to generate
+            # resolve columns to generate (exclude auto_increment columns)
             generated_columns = set(columns.keys())
+            for column_name, column_config in columns.items():
+                if column_config.auto_increment:
+                    generated_columns.discard(column_name)
             if existing_batch is not None:
                 generated_columns = generated_columns - set(existing_batch.columns)
 
@@ -750,9 +779,16 @@ async def _worker(
             for row_idx, row_generated_part in enumerate(rows_generated_part):
                 row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
                 row = {**row_generated_part, **row_existing_part}
-                # keep columns order according to user's spec
-                row = {column: row[column] for column in columns.keys()}
+                # keep columns order according to user's spec, but only include columns that exist in the row
+                # auto_increment columns will be added later
+                row = {column: row[column] for column in columns.keys() if column in row}
                 rows.append(row)
+
+            # add auto_increment values
+            if rows:
+                rows_df = pd.DataFrame(rows)
+                rows_df = _add_auto_increment_values(rows_df, columns)
+                rows = rows_df.to_dict('records')
 
             # track previous rows for improved data consistency, in case of sequential generation
             if n_workers == 1:
@@ -991,6 +1027,10 @@ async def _convert_table_rows_generator_to_df(
     # extract rows and convert to DataFrame
     rows = [item["row"] for item in items]
     df = pd.DataFrame(rows)
+    
+    # add auto_increment values after all rows are collected
+    df = _add_auto_increment_values(df, columns)
+    
     # harmonize dtypes
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df
@@ -1025,10 +1065,11 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
         }
         column_configs = {**existing_column_configs, **column_configs}
 
-        # primary keys are always strings
+        # primary keys can be strings or integers
         primary_key = table_config.get("primary_key", None)
         if primary_key is not None:
-            column_configs[primary_key]["dtype"] = DType.STRING
+            # infer dtype from existing data instead of forcing string
+            column_configs[primary_key]["dtype"] = _infer_dtype(existing_table[primary_key])
 
         table_config["columns"] = column_configs
     return tables
@@ -1266,7 +1307,7 @@ def sample(
                 "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",  # single string; no composite keys allowed; primary keys must have string dtype
+            "primary_key": "customer_id",  # single string; no composite keys allowed; primary keys can be string or auto-increment integer
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
