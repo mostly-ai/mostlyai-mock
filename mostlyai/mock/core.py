@@ -299,7 +299,13 @@ async def _sample_table(
         progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    table_df = await _convert_table_rows_generator_to_df(
+        table_rows_generator=table_rows_generator,
+        columns=columns,
+        foreign_keys=foreign_keys,
+        primary_key=primary_keys.get(name),
+        table_name=name,
+    )
     return table_df
 
 
@@ -384,6 +390,12 @@ def _create_table_prompt(
         prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
         for fk in self_referencing_foreign_keys:
             prompt += f"### Primary Key Column: `{target_primary_key}`\n\n"
+            
+            # check if primary key is auto-increment
+            pk_config = columns[target_primary_key]
+            if pk_config.auto_increment:
+                prompt += f"### Note: Primary Key `{target_primary_key}` is auto-increment\n\n"
+                prompt += "The primary key will be automatically assigned sequential integer values (1, 2, 3, ..., N) where N is the number of rows.\n\n"
 
             prompt += f"### Foreign Key Column: `{fk.column}`\n\n"
 
@@ -458,9 +470,18 @@ def _create_table_prompt(
         prompt += "\n\n"
 
     if has_self_referencing_foreign_keys_section:
-        prompt += "Target Table Self Referencing Foreign Key columns defined in `Self Referencing Foreign Keys` must be consistent with the `Target Table Primary Key`."
-        prompt += " Respect the `Description of the Relationship` of `Self Referencing Foreign Keys` section to understand the relationship."
-        prompt += "\n\n"
+        # check if primary key is auto-increment
+        pk_config = columns[target_primary_key]
+        if pk_config.auto_increment:
+            prompt += "Target Table Self Referencing Foreign Key columns defined in `Self Referencing Foreign Keys` must reference the auto-increment Primary Key."
+            prompt += f" Since the Primary Key `{target_primary_key}` is auto-increment, it will be assigned sequential integer values (1, 2, 3, ..., N)."
+            prompt += " For self-referencing foreign key values, use these sequential integers (1, 2, 3, ..., N) to reference other rows within the same table."
+            prompt += " Respect the `Description of the Relationship` of `Self Referencing Foreign Keys` section to understand the relationship."
+            prompt += "\n\n"
+        else:
+            prompt += "Target Table Self Referencing Foreign Key columns defined in `Self Referencing Foreign Keys` must be consistent with the `Target Table Primary Key`."
+            prompt += " Respect the `Description of the Relationship` of `Self Referencing Foreign Keys` section to understand the relationship."
+            prompt += "\n\n"
 
     if has_non_context_tables_section:
         assert len(foreign_keys) > 1
@@ -1015,6 +1036,9 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
 async def _convert_table_rows_generator_to_df(
     table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
+    foreign_keys: list[ForeignKeyConfig] | None = None,
+    primary_key: str | None = None,
+    table_name: str | None = None,
 ) -> pd.DataFrame:
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         df = df.copy()
@@ -1022,18 +1046,36 @@ async def _convert_table_rows_generator_to_df(
             df[column_name] = _align_series_dtypes_with_column_config(df[column_name], column_config)
         return df
 
-    # consume entire generator
-    items = [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator]
-    # sort items by batch_idx to maintain order (relevant especially for keeping the order of existing data)
-    items = sorted(items, key=lambda x: x["batch_idx"])
-    # extract rows and convert to DataFrame
-    rows = [item["row"] for item in items]
+    # consume and sort by batch_idx
+    items = sorted(
+        [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator],
+        key=lambda x: x["batch_idx"]
+    )
+    
+    # identify self-referencing FK columns for auto-increment PK
+    pk_config = columns.get(primary_key) if primary_key else None
+    self_ref_fks = {
+        fk.column for fk in (foreign_keys or [])
+        if fk.referenced_table == table_name and pk_config and pk_config.auto_increment
+    }
+    
+    # extract rows and remap self-referencing FKs
+    rows, batch_offset, prev_batch_idx = [], 0, None
+    for item in items:
+        if prev_batch_idx is not None and item["batch_idx"] != prev_batch_idx:
+            batch_offset = len(rows)
+        prev_batch_idx = item["batch_idx"]
+        
+        row = item["row"].copy()
+        for fk_col in self_ref_fks:
+            if (fk_val := row.get(fk_col)) is not None and isinstance(fk_val, (int, float)) and not pd.isna(fk_val):
+                row[fk_col] = int(fk_val) + batch_offset
+        rows.append(row)
+    
     df = pd.DataFrame(rows)
-    # add auto_increment values after all rows are collected
     df = _add_auto_increment_values(df, columns)
-    # harmonize dtypes
     df = align_df_dtypes_with_mock_dtypes(df, columns)
-    return df
+    return df[[col for col in columns.keys() if col in df.columns]]
 
 
 def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataFrame] | None) -> dict[str, dict]:
