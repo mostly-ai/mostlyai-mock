@@ -78,8 +78,6 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
 
                 fk_field = table_config.columns[fk.column]
                 pk_field = referenced_config.columns[referenced_config.primary_key]
-
-                # foreign key dtype must match primary key dtype
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
                         f"Foreign key violation in table '{table_name}': "
@@ -126,14 +124,14 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         return self
 
     @model_validator(mode="after")
-    def ensure_primary_key_is_string_or_integer(self) -> MockConfig:
+    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
         for table_name, table_config in self.root.items():
             if table_config.primary_key:
                 column_config = table_config.columns[table_config.primary_key]
-                if column_config.dtype not in [DType.STRING, DType.INTEGER]:
+                if column_config.dtype not in [DType.STRING]:
                     raise ValueError(
                         f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
-                        f" {[DType.STRING.value, DType.INTEGER.value]}"
+                        f" {[DType.STRING.value]}"
                     )
         return self
 
@@ -237,24 +235,6 @@ class ForeignKeyConfig(BaseModel):
     prompt: str | None = None
 
 
-def _is_auto_increment(column_name: str, column_config: ColumnConfig, primary_key: str | None) -> bool:
-    """helper function to determine if a column is auto-increment (integer primary key)"""
-    return column_name == primary_key and column_config.dtype == DType.INTEGER
-
-
-def _add_auto_increment_values(
-    df: pd.DataFrame, columns: dict[str, ColumnConfig], primary_key: str | None = None
-) -> pd.DataFrame:
-    df = df.copy()
-
-    for column_name, column_config in columns.items():
-        if _is_auto_increment(column_name, column_config, primary_key):
-            # each auto-increment column starts at 1 independently
-            df[column_name] = list(range(1, 1 + len(df)))
-
-    return df
-
-
 async def _sample_table(
     *,
     name: str,
@@ -285,13 +265,7 @@ async def _sample_table(
         progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = await _convert_table_rows_generator_to_df(
-        table_rows_generator=table_rows_generator,
-        columns=columns,
-        foreign_keys=foreign_keys,
-        primary_key=primary_keys.get(name),
-        table_name=name,
-    )
+    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
     return table_df
 
 
@@ -323,6 +297,7 @@ def _create_table_prompt(
     prompt: str,
     columns: dict[str, ColumnConfig],
     primary_keys: dict[str, str],
+    batch_idx: int,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig],
     existing_data: pd.DataFrame | None,
@@ -375,7 +350,9 @@ def _create_table_prompt(
         prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
         for fk in self_referencing_foreign_keys:
             prompt += f"### Primary Key Column: `{target_primary_key}`\n\n"
+
             prompt += f"### Foreign Key Column: `{fk.column}`\n\n"
+
             prompt += f"### Description of the Relationship: `{fk.prompt}`\n\n"
 
     foreign_keys = [fk for fk in foreign_keys if fk.referenced_table != name]  # exclude self-dependency going forward
@@ -432,6 +409,11 @@ def _create_table_prompt(
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
+
+    if target_primary_key is not None:
+        prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}-'."
+        prompt += " There is one exception: if primary keys are in existing data, don't add prefix to them."
+        prompt += "\n\n"
 
     if has_context_table_section:
         assert foreign_keys
@@ -664,17 +646,21 @@ async def _worker(
             }
 
             # support for openai reasoning models
-            # only apply reasoning_effort to actual reasoning models: o1, o3, and future o-series
             model_only = llm_config.model.split("/")[-1] if "/" in llm_config.model else llm_config.model
-            reasoning_effort = None
-            if model_only.startswith("o") and len(model_only) > 1:
-                # check for o1, o3, etc. models (not gpt-4o or other models starting with o)
-                next_char = model_only[1]
-                if next_char.isdigit():
-                    reasoning_effort = "low"
+            reasoning_effort = (
+                "low"
+                if (model_only.startswith("o") and (model_only[1:].isdigit() or model_only[1:].split("-")[0].isdigit()))
+                else "minimal"
+                if (
+                    model_only.startswith("gpt-")
+                    and model_only.split("-")[1].isdigit()
+                    and int(model_only.split("-")[1]) >= 5
+                )
+                else None
+            )
 
             if reasoning_effort:
-                litellm_kwargs.pop("top_p", None)
+                litellm_kwargs.pop("top_p")
                 litellm_kwargs["reasoning_effort"] = reasoning_effort
 
             # construct messages
@@ -683,6 +669,7 @@ async def _worker(
                 name=name,
                 prompt=prompt,
                 columns=columns,
+                batch_idx=batch_idx,
                 batch_size=batch_size,
                 primary_keys=primary_keys,
                 foreign_keys=foreign_keys,
@@ -763,9 +750,8 @@ async def _worker(
             for row_idx, row_generated_part in enumerate(rows_generated_part):
                 row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
                 row = {**row_generated_part, **row_existing_part}
-                # keep columns order according to user's spec, but only include columns that exist in the row
-                # auto_increment columns will be added later in _convert_table_rows_generator_to_df
-                row = {column: row[column] for column in columns.keys() if column in row}
+                # keep columns order according to user's spec
+                row = {column: row[column] for column in columns.keys()}
                 rows.append(row)
 
             # track previous rows for improved data consistency, in case of sequential generation
@@ -991,44 +977,23 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
 async def _convert_table_rows_generator_to_df(
     table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
-    foreign_keys: list[ForeignKeyConfig] | None = None,
-    primary_key: str | None = None,
-    table_name: str | None = None,
 ) -> pd.DataFrame:
-    def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig], skip_columns: set[str]) -> pd.DataFrame:
+    def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         df = df.copy()
         for column_name, column_config in columns.items():
-            # skip dtype alignment for columns that will be handled in post-processing
-            if column_name in skip_columns:
-                continue
             df[column_name] = _align_series_dtypes_with_column_config(df[column_name], column_config)
         return df
 
-    # consume and sort by batch_idx
-    items = sorted(
-        [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator],
-        key=lambda x: x["batch_idx"],
-    )
-
-    # extract rows
+    # consume entire generator
+    items = [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator]
+    # sort items by batch_idx to maintain order (relevant especially for keeping the order of existing data)
+    items = sorted(items, key=lambda x: x["batch_idx"])
+    # extract rows and convert to DataFrame
     rows = [item["row"] for item in items]
-
     df = pd.DataFrame(rows)
-    
-    # identify columns to skip during dtype alignment (will be handled in post-processing)
-    skip_columns = set()
-    # skip auto-increment PKs
-    if primary_key and _is_auto_increment(primary_key, columns[primary_key], primary_key):
-        skip_columns.add(primary_key)
-    # skip FKs that reference auto-increment PKs (they will be remapped in post-processing)
-    if foreign_keys:
-        for fk in foreign_keys:
-            if fk.column in columns:
-                skip_columns.add(fk.column)
-    
-    # note: do not add auto-increment values here, they will be handled in post-processing
-    df = align_df_dtypes_with_mock_dtypes(df, columns, skip_columns)
-    return df[[col for col in columns.keys() if col in df.columns]]
+    # harmonize dtypes
+    df = align_df_dtypes_with_mock_dtypes(df, columns)
+    return df
 
 
 def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataFrame] | None) -> dict[str, dict]:
@@ -1060,11 +1025,10 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
         }
         column_configs = {**existing_column_configs, **column_configs}
 
-        # primary keys can be strings or integers
+        # primary keys are always strings
         primary_key = table_config.get("primary_key", None)
         if primary_key is not None:
-            # infer dtype from existing data instead of forcing string
-            column_configs[primary_key]["dtype"] = _infer_dtype(existing_table[primary_key])
+            column_configs[primary_key]["dtype"] = DType.STRING
 
         table_config["columns"] = column_configs
     return tables
@@ -1165,82 +1129,6 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
     return execution_plan
 
 
-def _remap_string_pks_to_integers(
-    data: dict[str, pd.DataFrame], config: MockConfig
-) -> dict[str, pd.DataFrame]:
-    """
-    post-process generated data to convert string PKs to integer PKs.
-    also updates all FK references to match the new integer PKs.
-    """
-    # build mapping of which FKs reference which tables
-    fk_references = {}  # {referenced_table: [(referencing_table, fk_column), ...]}
-    for table_name, table_config in config.root.items():
-        for fk in table_config.foreign_keys:
-            if fk.referenced_table not in fk_references:
-                fk_references[fk.referenced_table] = []
-            fk_references[fk.referenced_table].append((table_name, fk.column))
-
-    # process each table
-    for table_name, table_config in config.root.items():
-        if table_config.primary_key is None:
-            continue
-
-        pk_column = table_config.primary_key
-        pk_config = table_config.columns[pk_column]
-
-        # check if this is an auto-increment integer PK
-        if not _is_auto_increment(pk_column, pk_config, table_config.primary_key):
-            continue
-
-        df = data[table_name]
-
-        # store original PK values before remapping
-        original_pk_values = df[pk_column].copy()
-        
-        # replace original PKs with sequential integers in this table
-        df[pk_column] = pd.Series(list(range(1, len(df) + 1)), dtype="int64[pyarrow]")
-
-        # update all FK references in other tables (and self-references)
-        if table_name in fk_references:
-            for ref_table_name, fk_column in fk_references[table_name]:
-                ref_df = data[ref_table_name]
-                
-                # for self-referencing tables, handle row-by-row to preserve intra-row references
-                if ref_table_name == table_name:
-                    # for each row, if FK == original PK in the same row, map FK to new PK for that row
-                    def remap_self_ref(row_idx):
-                        fk_val = ref_df.loc[row_idx, fk_column]
-                        if pd.notna(fk_val):
-                            orig_pk_val = original_pk_values.loc[row_idx]
-                            # if FK references the same row's original PK, use the same row's new PK
-                            if fk_val == orig_pk_val or str(fk_val) == str(orig_pk_val):
-                                return df.loc[row_idx, pk_column]
-                            # otherwise, find which row has this FK value as its PK and use its new PK
-                            matches = original_pk_values == fk_val
-                            if matches.any():
-                                new_pk_val = df.loc[matches.idxmax(), pk_column]
-                                return new_pk_val
-                        return fk_val
-                    
-                    ref_df[fk_column] = pd.Series([remap_self_ref(i) for i in ref_df.index], index=ref_df.index)
-                else:
-                    # for cross-table references, create a mapping from original to new PK
-                    pk_mapping = dict(zip(original_pk_values, df[pk_column]))
-                    # add string representations to mapping
-                    for orig, new in list(pk_mapping.items()):
-                        pk_mapping[str(orig)] = new
-                    
-                    ref_df[fk_column] = ref_df[fk_column].apply(
-                        lambda x: pk_mapping.get(x, pk_mapping.get(str(x), x)) if pd.notna(x) else x
-                    )
-                
-                # convert to integer dtype after remapping
-                fk_column_config = config.root[ref_table_name].columns[fk_column]
-                ref_df[fk_column] = _align_series_dtypes_with_column_config(ref_df[fk_column], fk_column_config)
-
-    return data
-
-
 async def _sample_common(
     *,
     tables: dict[str, dict],
@@ -1285,9 +1173,6 @@ async def _sample_common(
             progress_callback=progress_callback,
         )
         data[table_name] = df
-
-    # post-process: convert string PKs to integers and update FK references
-    data = _remap_string_pks_to_integers(data, config)
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
 
@@ -1381,7 +1266,7 @@ def sample(
                 "customer_id": {"prompt": "the unique id of the customer", "dtype": "string"},
                 "name": {"prompt": "first name and last name of the customer", "dtype": "string"},
             },
-            "primary_key": "customer_id",  # single string; no composite keys allowed; primary keys can be string or auto-increment integer
+            "primary_key": "customer_id",  # single string; no composite keys allowed; primary keys must have string dtype
         },
         "warehouses": {
             "prompt": "Warehouses of a hardware store",
