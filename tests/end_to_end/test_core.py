@@ -106,8 +106,9 @@ def test_existing_data():
 
 def test_auto_increment_with_foreign_keys():
     # test auto-increment integer PKs with self-referencing FK: 3 workers, 6 rows (mocked)
+    # note: LLM generates string PKs which are then remapped to integers in post-processing
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = '{"rows": [{"name": "A", "manager_id": 1}, {"name": "B", "manager_id": null}]}'
+        mock_response = '{"rows": [{"id": "A", "name": "Alice", "manager_id": "A"}, {"id": "B", "name": "Bob", "manager_id": null}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
@@ -124,11 +125,12 @@ def test_auto_increment_with_foreign_keys():
 
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         df = mock.sample(tables=tables, sample_size=6, n_workers=3)
-        # check expected structure: auto-increment ids 1-6, alternating names, self-referencing manager_ids
+        # check expected structure: auto-increment ids 1-6 (remapped from strings), alternating names
+        # manager_ids should also be remapped (A->1, B->2, etc.)
         expected = pd.DataFrame(
             {
                 "id": [1, 2, 3, 4, 5, 6],
-                "name": ["A", "B", "A", "B", "A", "B"],
+                "name": ["Alice", "Bob", "Alice", "Bob", "Alice", "Bob"],
                 "manager_id": pd.array([1.0, np.nan, 3.0, np.nan, 5.0, np.nan]),
             }
         )
