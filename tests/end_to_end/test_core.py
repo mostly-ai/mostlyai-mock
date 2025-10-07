@@ -111,7 +111,7 @@ def test_auto_increment_with_foreign_keys():
 
     tables = {
         "users": {
-            "columns": {"id": {"dtype": "integer", "auto_increment": True}, "name": {"dtype": "string"}},
+            "columns": {"id": {"dtype": "integer"}, "name": {"dtype": "string"}},
             "primary_key": "id",
         }
     }

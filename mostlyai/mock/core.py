@@ -79,14 +79,6 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                 fk_field = table_config.columns[fk.column]
                 pk_field = referenced_config.columns[referenced_config.primary_key]
 
-                # foreign key columns cannot be auto-increment
-                if fk_field.auto_increment:
-                    raise ValueError(
-                        f"Foreign key violation in table '{table_name}': "
-                        f"Foreign key column '{fk.column}' cannot have auto_increment=True. "
-                        f"Foreign keys must reference values from other tables, not generate their own."
-                    )
-
                 # foreign key dtype must match primary key dtype
                 if fk_field.dtype != pk_field.dtype:
                     raise ValueError(
@@ -134,16 +126,10 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         return self
 
     @model_validator(mode="after")
-    def ensure_primary_key_is_string_or_auto_increment_integer(self) -> MockConfig:
+    def ensure_primary_key_is_string_or_integer(self) -> MockConfig:
         for table_name, table_config in self.root.items():
             if table_config.primary_key:
                 column_config = table_config.columns[table_config.primary_key]
-                if column_config.dtype == DType.INTEGER and not column_config.auto_increment:
-                    raise ValueError(
-                        f"Primary key column '{table_config.primary_key}' in table '{table_name}' has integer dtype. "
-                        f"Integer primary keys must have auto_increment=True to guarantee unique values. "
-                        f"Use dtype='string' if you want to manually generate primary key values."
-                    )
                 if column_config.dtype not in [DType.STRING, DType.INTEGER]:
                     raise ValueError(
                         f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
@@ -184,7 +170,6 @@ class ColumnConfig(BaseModel):
     prompt: str = ""
     dtype: DType
     values: list[Any] = Field(default_factory=list)
-    auto_increment: bool = False
 
     @model_validator(mode="before")
     def set_default_dtype(cls, data):
@@ -195,12 +180,6 @@ class ColumnConfig(BaseModel):
                 else:
                     data["dtype"] = DType.STRING
         return data
-
-    @model_validator(mode="after")
-    def ensure_auto_increment_is_integer(self) -> ColumnConfig:
-        if self.auto_increment and self.dtype != DType.INTEGER:
-            raise ValueError("auto_increment can only be used with integer dtype")
-        return self
 
     @model_validator(mode="after")
     def ensure_values_are_unique(self) -> ColumnConfig:
@@ -258,11 +237,18 @@ class ForeignKeyConfig(BaseModel):
     prompt: str | None = None
 
 
-def _add_auto_increment_values(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
+def _is_auto_increment(column_name: str, column_config: ColumnConfig, primary_key: str | None) -> bool:
+    """helper function to determine if a column is auto-increment (integer primary key)"""
+    return column_name == primary_key and column_config.dtype == DType.INTEGER
+
+
+def _add_auto_increment_values(
+    df: pd.DataFrame, columns: dict[str, ColumnConfig], primary_key: str | None = None
+) -> pd.DataFrame:
     df = df.copy()
 
     for column_name, column_config in columns.items():
-        if column_config.auto_increment:
+        if _is_auto_increment(column_name, column_config, primary_key):
             # each auto-increment column starts at 1 independently
             df[column_name] = list(range(1, 1 + len(df)))
 
@@ -390,10 +376,10 @@ def _create_table_prompt(
         prompt += f"## Self Referencing Foreign Keys in Target Table `{name}`\n\n"
         for fk in self_referencing_foreign_keys:
             prompt += f"### Primary Key Column: `{target_primary_key}`\n\n"
-            
+
             # check if primary key is auto-increment
             pk_config = columns[target_primary_key]
-            if pk_config.auto_increment:
+            if _is_auto_increment(target_primary_key, pk_config, target_primary_key):
                 prompt += f"### Note: Primary Key `{target_primary_key}` is auto-increment\n\n"
                 prompt += "The primary key will be automatically assigned sequential integer values (1, 2, 3, ..., N) where N is the number of rows.\n\n"
 
@@ -472,7 +458,7 @@ def _create_table_prompt(
     if has_self_referencing_foreign_keys_section:
         # check if primary key is auto-increment
         pk_config = columns[target_primary_key]
-        if pk_config.auto_increment:
+        if _is_auto_increment(target_primary_key, pk_config, target_primary_key):
             prompt += "Target Table Self Referencing Foreign Key columns defined in `Self Referencing Foreign Keys` must reference the auto-increment Primary Key."
             prompt += f" Since the Primary Key `{target_primary_key}` is auto-increment, it will be assigned sequential integer values (1, 2, 3, ..., N)."
             prompt += " For self-referencing foreign key values, use these sequential integers (1, 2, 3, ..., N) to reference other rows within the same table."
@@ -682,7 +668,7 @@ async def _worker(
             # resolve columns to generate (exclude auto_increment columns)
             generated_columns = set(columns.keys())
             for column_name, column_config in columns.items():
-                if column_config.auto_increment:
+                if _is_auto_increment(column_name, column_config, primary_keys.get(name)):
                     generated_columns.discard(column_name)
             if existing_batch is not None:
                 generated_columns = generated_columns - set(existing_batch.columns)
@@ -1049,31 +1035,32 @@ async def _convert_table_rows_generator_to_df(
     # consume and sort by batch_idx
     items = sorted(
         [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator],
-        key=lambda x: x["batch_idx"]
+        key=lambda x: x["batch_idx"],
     )
-    
+
     # identify self-referencing FK columns for auto-increment PK
     pk_config = columns.get(primary_key) if primary_key else None
     self_ref_fks = {
-        fk.column for fk in (foreign_keys or [])
-        if fk.referenced_table == table_name and pk_config and pk_config.auto_increment
+        fk.column
+        for fk in (foreign_keys or [])
+        if fk.referenced_table == table_name and pk_config and _is_auto_increment(primary_key, pk_config, primary_key)
     }
-    
+
     # extract rows and remap self-referencing FKs
     rows, batch_offset, prev_batch_idx = [], 0, None
     for item in items:
         if prev_batch_idx is not None and item["batch_idx"] != prev_batch_idx:
             batch_offset = len(rows)
         prev_batch_idx = item["batch_idx"]
-        
+
         row = item["row"].copy()
         for fk_col in self_ref_fks:
             if (fk_val := row.get(fk_col)) is not None and isinstance(fk_val, (int, float)) and not pd.isna(fk_val):
                 row[fk_col] = int(fk_val) + batch_offset
         rows.append(row)
-    
+
     df = pd.DataFrame(rows)
-    df = _add_auto_increment_values(df, columns)
+    df = _add_auto_increment_values(df, columns, primary_key)
     df = align_df_dtypes_with_mock_dtypes(df, columns)
     return df[[col for col in columns.keys() if col in df.columns]]
 
