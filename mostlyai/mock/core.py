@@ -1200,10 +1200,8 @@ def _postprocess_table(
         old_values = df[pk_col].tolist()
         new_values = list(range(1, len(df) + 1))
 
-        # build mapping: old string values -> new integers
+        # build mapping: old LLM-generated string values -> new auto-incremented integers
         pk_mappings[table_name] = {str(old): new for old, new in zip(old_values, new_values)}
-        # also map new integer values (for FKs that reference already-processed PKs)
-        pk_mappings[table_name].update({str(new): new for new in new_values})
 
         df[pk_col] = new_values
 
