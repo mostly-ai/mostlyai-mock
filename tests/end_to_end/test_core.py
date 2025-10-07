@@ -15,6 +15,7 @@
 from unittest.mock import patch
 
 import litellm
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -104,19 +105,31 @@ def test_existing_data():
 
 
 def test_auto_increment_with_foreign_keys():
-    # test auto-increment integer PKs: 3 workers, 6 rows (mocked)
+    # test auto-increment integer PKs with self-referencing FK: 3 workers, 6 rows (mocked)
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = '{"rows": [{"name": "A"}, {"name": "B"}]}'
+        mock_response = '{"rows": [{"name": "A", "manager_id": 1}, {"name": "B", "manager_id": null}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
         "users": {
-            "columns": {"id": {"dtype": "integer"}, "name": {"dtype": "string"}},
+            "columns": {
+                "id": {"dtype": "integer"},
+                "name": {"dtype": "string"},
+                "manager_id": {"dtype": "integer"},
+            },
             "primary_key": "id",
+            "foreign_keys": [{"column": "manager_id", "referenced_table": "users", "prompt": "manager of the user"}],
         }
     }
 
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         df = mock.sample(tables=tables, sample_size=6, n_workers=3)
-        assert sorted(df["id"].tolist()) == list(range(1, 7))
-        assert len(df) == 6
+        # check expected structure: auto-increment ids 1-6, alternating names, self-referencing manager_ids
+        expected = pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4, 5, 6],
+                "name": ["A", "B", "A", "B", "A", "B"],
+                "manager_id": pd.array([1.0, np.nan, 3.0, np.nan, 5.0, np.nan]),
+            }
+        )
+        pd.testing.assert_frame_equal(df, expected, check_dtype=False)
