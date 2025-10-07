@@ -179,7 +179,7 @@ tables = {
     "customers": {
         "prompt": "Customers of an e-commerce store",
         "columns": {
-            "customer_id": {"dtype": "integer", "auto_increment": True},
+            "customer_id": {"dtype": "integer"},
             "name": {"prompt": "first name and last name", "dtype": "string"},
             "email": {"prompt": "email address", "dtype": "string"},
         },
@@ -188,7 +188,7 @@ tables = {
     "orders": {
         "prompt": "Customer orders",
         "columns": {
-            "order_id": {"dtype": "integer", "auto_increment": True},
+            "order_id": {"dtype": "integer"},
             "customer_id": {"dtype": "integer"},
             "product_name": {"prompt": "product name", "dtype": "string"},
             "quantity": {"prompt": "quantity ordered", "dtype": "integer"},
