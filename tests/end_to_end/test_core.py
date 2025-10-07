@@ -15,7 +15,6 @@
 from unittest.mock import patch
 
 import litellm
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -107,8 +106,12 @@ def test_existing_data():
 def test_auto_increment_with_foreign_keys():
     # test auto-increment integer PKs with self-referencing FK: 3 workers, 6 rows (mocked)
     # note: LLM generates string PKs which are then remapped to integers in post-processing
+    batch = 0
+
     def litellm_completion_with_mock_response(*args, **kwargs):
-        mock_response = '{"rows": [{"id": "A", "name": "Alice", "manager_id": "A"}, {"id": "B", "name": "Bob", "manager_id": null}]}'
+        nonlocal batch
+        batch += 1
+        mock_response = f'{{"rows": [{{"id": "B{batch}-1", "name": "Alice", "manager_id": null}}, {{"id": "B{batch}-2", "name": "Bob", "manager_id": "B{batch}-1"}}]}}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
     tables = {
@@ -131,7 +134,7 @@ def test_auto_increment_with_foreign_keys():
             {
                 "id": [1, 2, 3, 4, 5, 6],
                 "name": ["Alice", "Bob", "Alice", "Bob", "Alice", "Bob"],
-                "manager_id": pd.array([1.0, np.nan, 3.0, np.nan, 5.0, np.nan]),
+                "manager_id": [None, 1, None, 3, None, 5],
             }
         )
         pd.testing.assert_frame_equal(df, expected, check_dtype=False)
