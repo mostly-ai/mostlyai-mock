@@ -1218,7 +1218,9 @@ def _postprocess_table(
 
         # map FK values from strings to integers
         mapping = pk_mappings[fk.referenced_table]
-        df[fk.column] = df[fk.column].astype(str).map(mapping).astype("Int64")
+        df[fk.column] = (
+            df[fk.column].apply(lambda val: mapping.get(str(val)) if pd.notna(val) else None).astype("Int64")
+        )
 
     return df
 
