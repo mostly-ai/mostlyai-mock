@@ -1219,7 +1219,7 @@ def _postprocess_table(
         # map FK values from strings to integers
         mapping = pk_mappings[fk.referenced_table]
         df[fk.column] = (
-            df[fk.column].apply(lambda val: mapping.get(str(val)) if pd.notna(val) else None).astype("Int64")
+            df[fk.column].apply(lambda val: mapping.get(str(val)) if pd.notna(val) else None).astype("int64[pyarrow]")
         )
 
     return df
@@ -1255,6 +1255,7 @@ async def _sample_common(
     # track mappings from old string PK values to new integer PK values
     pk_mappings: dict[str, dict[str, int]] = {}
 
+    # first, generate all tables (without postprocessing)
     for table_name in execution_plan:
         table_config = config.root[table_name]
         df = await _sample_table(
@@ -1272,8 +1273,12 @@ async def _sample_common(
             config=config,
             progress_callback=progress_callback,
         )
-        df = _postprocess_table(table_name, df, table_config, config, pk_mappings)
         data[table_name] = df
+
+    # then, postprocess all tables (convert integer PKs/FKs from strings to integers)
+    for table_name in execution_plan:
+        table_config = config.root[table_name]
+        data[table_name] = _postprocess_table(table_name, data[table_name], table_config, config, pk_mappings)
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
 
