@@ -25,8 +25,6 @@ litellm_completion = litellm.completion
 
 def test_single_table():
     def litellm_completion_with_mock_response(*args, **kwargs):
-        # remove unsupported params for mock
-        kwargs.pop("reasoning_effort", None)
         mock_response = '{"rows": [{"guest_id": 1, "nationality": "US", "name": "John Doe", "gender": "male", "age": 25, "date_of_birth": "1990-01-01", "checkin_time": "2025-05-01 10:00:00", "is_vip": true, "price_per_night": 100.0, "room_number": 101}]}'
         return litellm_completion(*args, **kwargs, mock_response=mock_response)
 
@@ -116,8 +114,6 @@ def test_auto_increment_with_foreign_keys():
     def litellm_completion_with_mock_response(*args, **kwargs):
         nonlocal batch
         batch += 1
-        # remove unsupported params for mock
-        kwargs.pop("reasoning_effort", None)
         if batch <= n_workers:
             # mock users: each worker produces 2 rows
             mock_response = f'{{"rows": [{{"id": "B{batch}-1", "name": "Alice", "manager_id": null}}, {{"id": "B{batch}-2", "name": "Bob", "manager_id": "B{batch}-1"}}]}}'
