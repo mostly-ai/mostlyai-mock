@@ -1013,12 +1013,10 @@ def _get_integer_pk_fk_columns(
         skip_conversion.add(primary_key)
 
     # foreign keys that reference integer primary keys
+    # note: FK dtype is guaranteed to match referenced PK dtype by config validation
     for fk in foreign_keys:
         if fk.column in columns and columns[fk.column].dtype == DType.INTEGER:
-            ref_config = config.root.get(fk.referenced_table)
-            if ref_config and ref_config.primary_key:
-                if ref_config.columns[ref_config.primary_key].dtype == DType.INTEGER:
-                    skip_conversion.add(fk.column)
+            skip_conversion.add(fk.column)
 
     return skip_conversion
 
@@ -1206,12 +1204,10 @@ def _postprocess_table(
         df[pk_col] = new_values
 
     # convert foreign keys that reference integer primary keys
+    # note: FK dtype is guaranteed to match referenced PK dtype by config validation
     for fk in table_config.foreign_keys:
-        ref_config = config.root[fk.referenced_table]
-        ref_pk_col = ref_config.primary_key
-
-        # skip if not referencing an integer PK
-        if not ref_pk_col or ref_config.columns[ref_pk_col].dtype != DType.INTEGER:
+        # skip if not an integer FK (which means it doesn't reference an integer PK)
+        if table_config.columns[fk.column].dtype != DType.INTEGER:
             continue
         if fk.referenced_table not in pk_mappings:
             continue
