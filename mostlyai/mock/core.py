@@ -124,14 +124,14 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
         return self
 
     @model_validator(mode="after")
-    def ensure_primary_key_is_string_dtype(self) -> MockConfig:
+    def ensure_primary_key_is_string_or_integer_dtype(self) -> MockConfig:
         for table_name, table_config in self.root.items():
             if table_config.primary_key:
                 column_config = table_config.columns[table_config.primary_key]
-                if column_config.dtype not in [DType.STRING]:
+                if column_config.dtype not in [DType.STRING, DType.INTEGER]:
                     raise ValueError(
                         f"Primary key column '{table_config.primary_key}' in table '{table_name}' must be one of the following types:"
-                        f" {[DType.STRING.value]}"
+                        f" {[DType.STRING.value, DType.INTEGER.value]}"
                     )
         return self
 
@@ -248,6 +248,7 @@ async def _sample_table(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
+    config: MockConfig,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
     table_rows_generator = _create_table_rows_generator(
@@ -265,7 +266,13 @@ async def _sample_table(
         progress_callback=progress_callback,
     )
     table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
-    table_df = await _convert_table_rows_generator_to_df(table_rows_generator=table_rows_generator, columns=columns)
+    table_df = await _convert_table_rows_generator_to_df(
+        table_rows_generator=table_rows_generator,
+        columns=columns,
+        primary_key=primary_keys.get(name),
+        foreign_keys=foreign_keys,
+        config=config,
+    )
     return table_df
 
 
@@ -326,6 +333,15 @@ def _create_table_prompt(
         column_specifications = {
             column: spec for column, spec in column_specifications.items() if column not in existing_data.columns
         }
+    # ensure primary keys stay as string in the prompt, even if dtype is integer
+    if target_primary_key and target_primary_key in column_specifications:
+        if columns[target_primary_key].dtype == DType.INTEGER:
+            column_specifications[target_primary_key]["dtype"] = DType.STRING.value
+    # ensure foreign keys referencing integer primary keys also stay as string in the prompt
+    for fk in foreign_keys:
+        if fk.column in column_specifications:
+            if columns[fk.column].dtype == DType.INTEGER:
+                column_specifications[fk.column]["dtype"] = DType.STRING.value
     prompt += f"{json.dumps(column_specifications, indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
@@ -565,11 +581,17 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
 
 
 def _create_structured_output_schema(
-    columns: dict[str, ColumnConfig], existing_data: pd.DataFrame | None
+    columns: dict[str, ColumnConfig],
+    existing_data: pd.DataFrame | None,
+    primary_key: str | None,
+    foreign_keys: list[ForeignKeyConfig],
 ) -> type[BaseModel]:
-    def create_annotation(column_config: ColumnConfig) -> type:
+    def create_annotation(column_config: ColumnConfig, is_int_pk_or_fk: bool = False) -> type:
         if column_config.values or column_config.dtype is DType.CATEGORY:
             return Literal[tuple(column_config.values)]  # type: ignore
+        # ensure integer primary keys and foreign keys are treated as strings
+        if is_int_pk_or_fk:
+            return str | None
         return {
             DType.INTEGER: int | None,
             DType.FLOAT: float | None,
@@ -585,7 +607,9 @@ def _create_structured_output_schema(
     for column_name, column_config in columns.items():
         if existing_data is not None and column_name in existing_data.columns:
             continue  # skip columns that already exist in existing data
-        annotation = create_annotation(column_config)
+        is_int_pk = primary_key and column_name == primary_key and column_config.dtype == DType.INTEGER
+        is_int_fk = any(fk.column == column_name for fk in foreign_keys) and column_config.dtype == DType.INTEGER
+        annotation = create_annotation(column_config, is_int_pk or is_int_fk)
         fields[column_name] = (annotation, Field(...))
     TableRow = create_model("TableRow", **fields)
     TableRows = create_model("TableRows", rows=(list[TableRow], ...))
@@ -632,8 +656,9 @@ async def _worker(
             # construct schema for Structured Outputs (applies to JSON LLMOutputFormat only)
             structured_output_schema = None
             if llm_output_format == LLMOutputFormat.JSON:
+                pk_col = primary_keys.get(name)
                 structured_output_schema = _create_structured_output_schema(
-                    columns=columns, existing_data=existing_batch
+                    columns=columns, existing_data=existing_batch, primary_key=pk_col, foreign_keys=foreign_keys
                 )
 
             # construct litellm kwargs
@@ -974,14 +999,47 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
     return series
 
 
+def _get_integer_pk_fk_columns(
+    columns: dict[str, ColumnConfig],
+    primary_key: str | None,
+    foreign_keys: list[ForeignKeyConfig],
+    config: MockConfig,
+) -> set[str]:
+    """determine which columns should be kept as strings (integer PKs and FKs that reference integer PKs)"""
+    skip_conversion = set()
+
+    # integer primary keys
+    if primary_key and primary_key in columns and columns[primary_key].dtype == DType.INTEGER:
+        skip_conversion.add(primary_key)
+
+    # foreign keys that reference integer primary keys
+    # note: FK dtype is guaranteed to match referenced PK dtype by config validation
+    for fk in foreign_keys:
+        if fk.column in columns and columns[fk.column].dtype == DType.INTEGER:
+            skip_conversion.add(fk.column)
+
+    return skip_conversion
+
+
 async def _convert_table_rows_generator_to_df(
     table_rows_generator: AsyncGenerator[dict],
     columns: dict[str, ColumnConfig],
+    primary_key: str | None = None,
+    foreign_keys: list[ForeignKeyConfig] | None = None,
+    config: MockConfig | None = None,
 ) -> pd.DataFrame:
     def align_df_dtypes_with_mock_dtypes(df: pd.DataFrame, columns: dict[str, ColumnConfig]) -> pd.DataFrame:
         df = df.copy()
+        skip_int_conversion = (
+            _get_integer_pk_fk_columns(columns, primary_key, foreign_keys or [], config) if config else set()
+        )
+
         for column_name, column_config in columns.items():
-            df[column_name] = _align_series_dtypes_with_column_config(df[column_name], column_config)
+            # keep integer PKs and FKs as strings for now (post-processing will convert them)
+            if column_name in skip_int_conversion:
+                df[column_name] = df[column_name].astype("string[pyarrow]")
+            else:
+                df[column_name] = _align_series_dtypes_with_column_config(df[column_name], column_config)
         return df
 
     # consume entire generator
@@ -1024,11 +1082,6 @@ def _harmonize_tables(tables: dict[str, dict], existing_data: dict[str, pd.DataF
             if existing_column not in column_configs
         }
         column_configs = {**existing_column_configs, **column_configs}
-
-        # primary keys are always strings
-        primary_key = table_config.get("primary_key", None)
-        if primary_key is not None:
-            column_configs[primary_key]["dtype"] = DType.STRING
 
         table_config["columns"] = column_configs
     return tables
@@ -1129,6 +1182,45 @@ def _build_execution_plan(config: MockConfig) -> list[str]:
     return execution_plan
 
 
+def _postprocess_table(
+    table_name: str,
+    df: pd.DataFrame,
+    table_config: TableConfig,
+    config: MockConfig,
+    pk_mappings: dict[str, dict[str, int]],
+) -> pd.DataFrame:
+    """convert integer PKs and FKs from strings to auto-incremented integers"""
+    df = df.copy()
+
+    # convert integer primary keys to 1, 2, 3, ... and build mapping
+    pk_col = table_config.primary_key
+    if pk_col and table_config.columns[pk_col].dtype == DType.INTEGER:
+        old_values = df[pk_col].tolist()
+        new_values = list(range(1, len(df) + 1))
+
+        # build mapping: old LLM-generated string values -> new auto-incremented integers
+        pk_mappings[table_name] = {str(old): new for old, new in zip(old_values, new_values)}
+
+        df[pk_col] = new_values
+
+    # convert foreign keys that reference integer primary keys
+    # note: FK dtype is guaranteed to match referenced PK dtype by config validation
+    for fk in table_config.foreign_keys:
+        # skip if not an integer FK (which means it doesn't reference an integer PK)
+        if table_config.columns[fk.column].dtype != DType.INTEGER:
+            continue
+        if fk.referenced_table not in pk_mappings:
+            continue
+
+        # map FK values from strings to integers
+        mapping = pk_mappings[fk.referenced_table]
+        df[fk.column] = (
+            df[fk.column].apply(lambda val: mapping.get(str(val)) if pd.notna(val) else None).astype("int64[pyarrow]")
+        )
+
+    return df
+
+
 async def _sample_common(
     *,
     tables: dict[str, dict],
@@ -1156,6 +1248,10 @@ async def _sample_common(
 
     data: dict[str, pd.DataFrame] = _harmonize_existing_data(existing_data, config) or {}
 
+    # track mappings from old string PK values to new integer PK values
+    pk_mappings: dict[str, dict[str, int]] = {}
+
+    # first, generate all tables (without postprocessing)
     for table_name in execution_plan:
         table_config = config.root[table_name]
         df = await _sample_table(
@@ -1170,9 +1266,15 @@ async def _sample_common(
             non_context_size=10,  # pick 10 rows to choose from for each non-context foreign key
             n_workers=n_workers,
             llm_config=llm_config,
+            config=config,
             progress_callback=progress_callback,
         )
         data[table_name] = df
+
+    # then, postprocess all tables (convert integer PKs/FKs from strings to integers)
+    for table_name in execution_plan:
+        table_config = config.root[table_name]
+        data[table_name] = _postprocess_table(table_name, data[table_name], table_config, config, pk_mappings)
 
     return next(iter(data.values())) if len(data) == 1 and return_type == "auto" else data
 

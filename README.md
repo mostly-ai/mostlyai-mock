@@ -170,7 +170,7 @@ print(data["items"])
 # 9  B4-200510  B1-3010022         Bottled Spring Water (24 Pack)   34.95
 ```
 
-6. Create your first self-referencing mock table
+5. Create your first self-referencing mock table with auto-increment integer primary keys
 
 ```python
 from mostlyai import mock
@@ -179,9 +179,9 @@ tables = {
     "employees": {
         "prompt": "Employees of a company",
         "columns": {
-            "employee_id": {"prompt": "the unique id of the employee; sequential", "dtype": "string"},
-            "name": {"prompt": "first name and last name of the president", "dtype": "string"},
-            "boss_id": {"prompt": "the id of the boss of the employee", "dtype": "string"},
+            "employee_id": {"dtype": "integer"},
+            "name": {"prompt": "first name and last name of the employee", "dtype": "string"},
+            "boss_id": {"dtype": "integer"},
             "role": {"prompt": "the role of the employee", "dtype": "string"},
         },
         "primary_key": "employee_id",
@@ -196,20 +196,20 @@ tables = {
 }
 df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-5", n_workers=1)
 print(df)
-#   employee_id              name boss_id                   role
-# 0        B0-1      Patricia Lee    <NA>              President
-# 1        B0-2  Edward Rodriguez    B0-1       VP of Operations
-# 2        B0-3      Maria Cortez    B0-1          VP of Finance
-# 3        B0-4     Thomas Nguyen    B0-1       VP of Technology
-# 4        B0-5        Rachel Kim    B0-2     Operations Manager
-# 5        B0-6     Jeffrey Patel    B0-2      Supply Chain Lead
-# 6        B0-7      Olivia Smith    B0-2  Facilities Supervisor
-# 7        B0-8      Brian Carter    B0-3     Accounting Manager
-# 8        B0-9   Lauren Anderson    B0-3      Financial Analyst
-# 9       B0-10   Santiago Romero    B0-3     Payroll Specialist
+#   employee_id              name  boss_id                   role
+# 0            1      Patricia Lee     <NA>              President
+# 1            2  Edward Rodriguez        1       VP of Operations
+# 2            3      Maria Cortez        1          VP of Finance
+# 3            4     Thomas Nguyen        1       VP of Technology
+# 4            5        Rachel Kim        2     Operations Manager
+# 5            6     Jeffrey Patel        2      Supply Chain Lead
+# 6            7      Olivia Smith        2  Facilities Supervisor
+# 7            8      Brian Carter        3     Accounting Manager
+# 8            9   Lauren Anderson        3      Financial Analyst
+# 9           10   Santiago Romero        3     Payroll Specialist
 ```
 
-7. Enrich existing data with additional columns
+6. Enrich existing data with additional columns
 
 ```python
 from mostlyai import mock
