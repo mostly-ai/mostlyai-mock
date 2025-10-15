@@ -251,13 +251,21 @@ async def _sample_table(
     config: MockConfig,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
+    # provide a default progress callback if none is provided
     if progress_callback is None:
 
         async def default_progress_callback(**kwargs):
-            if kwargs.get("is_final", False):
-                print(f"\r{kwargs['message']}")  # Final update with newline
+            percentage = (kwargs["progress"] / kwargs["total"]) * 100 if kwargs["total"] > 0 else 0
+            rows_per_second = kwargs["rows"] / kwargs["elapsed_time"] if kwargs["elapsed_time"] > 0 else 0
+            message = (
+                f"Generating table `{kwargs['table']}`".ljust(40)
+                + f": {percentage:3.0f}%, {kwargs['rows']} rows, {kwargs['elapsed_time']:.0f}s, {rows_per_second:.1f} rows/s"
+            )
+            is_final = kwargs["progress"] >= kwargs["total"]
+            if is_final:
+                print(f"\r{message}")  # final update with newline
             else:
-                print(f"\r{kwargs['message']}", end="", flush=True)  # In-progress update
+                print(f"\r{message}", end="", flush=True)  # in-progress update
 
         progress_callback = default_progress_callback
 
@@ -969,23 +977,13 @@ async def _create_table_rows_generator(
                 break
         n_completed_batches += 1
         if progress_callback:
-            # Calculate progress metrics
             elapsed_time = time.time() - table_start_time
-            percentage = min(100, (n_yielded_sequences / sample_size) * 100) if sample_size > 0 else 0
-            rows_per_second = n_yielded_sequences / elapsed_time if elapsed_time > 0 else 0
-
-            # Check if this is the final update
-            is_final = n_yielded_sequences >= sample_size
-
             await progress_callback(
+                table=name,
                 progress=n_completed_batches,
                 total=n_total_batches,
-                message=f"Generating table `{name}`: {percentage:3.0f}%, {n_yielded_sequences} rows, {elapsed_time:.0f}s, {rows_per_second:.1f} rows/s",
-                percentage=percentage,
-                generated_rows=n_yielded_sequences,
-                rows_per_second=rows_per_second,
-                elapsed_time=elapsed_time,
-                is_final=is_final,
+                rows=n_yielded_sequences,
+                elapsed_time=round(elapsed_time, 2),
             )
         result_queue.task_done()
 
@@ -1357,8 +1355,8 @@ def sample(
         progress_callback (Callable | None): Optional callback function to track progress during data generation.
             If not provided, a default progress callback will display progress messages in the format:
             "Generating table `table_name`: X%, Y rows, Zs, W.X rows/s"
-            The callback receives keyword arguments including: progress, total, message, percentage,
-            generated_rows, rows_per_second, elapsed_time, and is_final. Default is None.
+            The callback receives keyword arguments including: table, progress, total,
+            rows, and elapsed_time. Default is None.
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
@@ -1537,13 +1535,18 @@ def sample(
     df_orders = data["orders"]
     ```
 
-    Example of using a custom progress callback:
+    Example of using a custom progress callback to provide progress in JSON format:
     ```python
     from mostlyai import mock
     import asyncio
+    import json
 
     async def custom_progress_callback(**kwargs):
-        print(f"Custom: {kwargs['message']}")
+        msg = f"\r{json.dumps(kwargs)}"
+        if kwargs["progress"] < kwargs["total"]:
+            print(msg, end="", flush=True)
+        else:
+            print(msg)
 
     df = mock.sample(
         tables=tables,
