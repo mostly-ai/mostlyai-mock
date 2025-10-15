@@ -9,7 +9,7 @@ Use LLMs to generate any Tabular Data towards your needs. Create from scratch, e
 * A light-weight python client for prompting LLMs for mixed-type tabular data.
 * Select from a wide range of LLM endpoints and LLM models.
 * Supports single-table as well as multi-table scenarios.
-* Supports variety of data types: `string`, `categorical`, `integer`, `float`, `boolean`, `date`, and `datetime`.
+* Supports variety of data types: `string`, `integer`, `float`, `category`, `boolean`, `date`, and `datetime`.
 * Specify context, distributions and rules via dataset-, table- or column-level prompts.
 * Create from scratch or enrich existing datasets with new columns and/or rows.
 * Tailor the diversity and realism of your generated data via temperature and top_p.
