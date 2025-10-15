@@ -18,8 +18,9 @@ import asyncio
 import concurrent.futures
 import json
 import math
+import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
@@ -29,7 +30,6 @@ import litellm
 import pandas as pd
 import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
-from tqdm.asyncio import tqdm
 
 litellm.suppress_debug_info = True
 
@@ -249,8 +249,26 @@ async def _sample_table(
     n_workers: int,
     llm_config: LLMConfig,
     config: MockConfig,
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame:
+    # provide a default progress callback if none is provided
+    if progress_callback is None:
+
+        async def default_progress_callback(**kwargs):
+            percentage = (kwargs["progress"] / kwargs["total"]) * 100 if kwargs["total"] > 0 else 0
+            rows_per_second = kwargs["rows"] / kwargs["elapsed_time"] if kwargs["elapsed_time"] > 0 else 0
+            message = (
+                f"Generating table `{kwargs['table']}`".ljust(40)
+                + f": {percentage:3.0f}%, {kwargs['rows']} rows, {kwargs['elapsed_time']:.0f}s, {rows_per_second:.1f} rows/s"
+            )
+            is_final = kwargs["progress"] >= kwargs["total"]
+            if is_final:
+                print(f"\r{message}")  # final update with newline
+            else:
+                print(f"\r{message}", end="", flush=True)  # in-progress update
+
+        progress_callback = default_progress_callback
+
     table_rows_generator = _create_table_rows_generator(
         name=name,
         prompt=prompt,
@@ -265,7 +283,6 @@ async def _sample_table(
         llm_config=llm_config,
         progress_callback=progress_callback,
     )
-    table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(
         table_rows_generator=table_rows_generator,
         columns=columns,
@@ -805,7 +822,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
@@ -927,6 +944,7 @@ async def _create_table_rows_generator(
 
     n_completed_batches = 0
     n_yielded_sequences = 0
+    table_start_time = time.time()
     while n_yielded_sequences < sample_size:
         if n_completed_batches >= n_total_batches:
             assert context_data is None, "n_total_batches is fixed for linked tables"
@@ -959,10 +977,13 @@ async def _create_table_rows_generator(
                 break
         n_completed_batches += 1
         if progress_callback:
+            elapsed_time = time.time() - table_start_time
             await progress_callback(
+                table=name,
                 progress=n_completed_batches,
                 total=n_total_batches,
-                message=f"Generating rows for table `{name}`: {n_completed_batches}/{n_total_batches}",
+                rows=n_yielded_sequences,
+                elapsed_time=round(elapsed_time, 2),
             )
         result_queue.task_done()
 
@@ -1232,7 +1253,7 @@ async def _sample_common(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ):
     tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
     config = MockConfig(tables)
@@ -1290,6 +1311,7 @@ def sample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1330,6 +1352,11 @@ def sample(
         n_workers (int): The number of concurrent workers making the LLM calls. Default is 10. The value is clamped to the range [1, 10].
             If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
+        progress_callback (Callable | None): Optional callback function to track progress during data generation.
+            If not provided, a default progress callback will display progress messages in the format:
+            "Generating table `table_name`: X%, Y rows, Zs, W.X rows/s"
+            The callback receives keyword arguments including: table, progress, total,
+            rows, and elapsed_time. Default is None.
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
@@ -1507,6 +1534,26 @@ def sample(
     df_customers = data["customers"]
     df_orders = data["orders"]
     ```
+
+    Example of using a custom progress callback to provide progress in JSON format:
+    ```python
+    from mostlyai import mock
+    import asyncio
+    import json
+
+    async def custom_progress_callback(**kwargs):
+        msg = f"\r{json.dumps(kwargs)}"
+        if kwargs["progress"] < kwargs["total"]:
+            print(msg, end="", flush=True)
+        else:
+            print(msg)
+
+    df = mock.sample(
+        tables=tables,
+        sample_size=10,
+        progress_callback=custom_progress_callback
+    )
+    ```
     """
 
     def sample_common_sync(*args, **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
@@ -1524,7 +1571,7 @@ def sample(
             top_p=top_p,
             n_workers=n_workers,
             return_type=return_type,
-            progress_callback=None,
+            progress_callback=progress_callback,
         )
         return future.result()
 
@@ -1540,7 +1587,7 @@ async def _asample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     return await _sample_common(
         tables=tables,
