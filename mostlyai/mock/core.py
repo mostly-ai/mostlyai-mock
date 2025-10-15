@@ -18,6 +18,7 @@ import asyncio
 import concurrent.futures
 import json
 import math
+import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
 from enum import Enum
@@ -29,7 +30,6 @@ import litellm
 import pandas as pd
 import tenacity
 from pydantic import BaseModel, Field, RootModel, create_model, field_validator, model_validator
-from tqdm.asyncio import tqdm
 
 litellm.suppress_debug_info = True
 
@@ -251,6 +251,16 @@ async def _sample_table(
     config: MockConfig,
     progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
+    if progress_callback is None:
+
+        async def default_progress_callback(**kwargs):
+            if kwargs.get("is_final", False):
+                print(f"\r{kwargs['message']}")  # Final update with newline
+            else:
+                print(f"\r{kwargs['message']}", end="", flush=True)  # In-progress update
+
+        progress_callback = default_progress_callback
+
     table_rows_generator = _create_table_rows_generator(
         name=name,
         prompt=prompt,
@@ -265,7 +275,6 @@ async def _sample_table(
         llm_config=llm_config,
         progress_callback=progress_callback,
     )
-    table_rows_generator = tqdm(table_rows_generator, desc=f"Generating rows for table `{name}`".ljust(45))
     table_df = await _convert_table_rows_generator_to_df(
         table_rows_generator=table_rows_generator,
         columns=columns,
@@ -927,6 +936,7 @@ async def _create_table_rows_generator(
 
     n_completed_batches = 0
     n_yielded_sequences = 0
+    table_start_time = time.time()
     while n_yielded_sequences < sample_size:
         if n_completed_batches >= n_total_batches:
             assert context_data is None, "n_total_batches is fixed for linked tables"
@@ -959,10 +969,23 @@ async def _create_table_rows_generator(
                 break
         n_completed_batches += 1
         if progress_callback:
+            # Calculate progress metrics
+            elapsed_time = time.time() - table_start_time
+            percentage = min(100, (n_yielded_sequences / sample_size) * 100) if sample_size > 0 else 0
+            rows_per_second = n_yielded_sequences / elapsed_time if elapsed_time > 0 else 0
+
+            # Check if this is the final update
+            is_final = n_yielded_sequences >= sample_size
+
             await progress_callback(
                 progress=n_completed_batches,
                 total=n_total_batches,
-                message=f"Generating rows for table `{name}`: {n_completed_batches}/{n_total_batches}",
+                message=f"Generating table `{name}`: {percentage:3.0f}%, {n_yielded_sequences} rows, {elapsed_time:.0f}s, {rows_per_second:.1f} rows/s",
+                percentage=percentage,
+                generated_rows=n_yielded_sequences,
+                rows_per_second=rows_per_second,
+                elapsed_time=elapsed_time,
+                is_final=is_final,
             )
         result_queue.task_done()
 
@@ -1290,6 +1313,7 @@ def sample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
+    progress_callback: Callable | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1524,7 +1548,7 @@ def sample(
             top_p=top_p,
             n_workers=n_workers,
             return_type=return_type,
-            progress_callback=None,
+            progress_callback=progress_callback,
         )
         return future.result()
 
