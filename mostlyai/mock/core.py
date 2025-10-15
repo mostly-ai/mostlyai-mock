@@ -20,7 +20,7 @@ import json
 import math
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
 from io import StringIO
 from typing import Any, Literal
@@ -249,7 +249,7 @@ async def _sample_table(
     n_workers: int,
     llm_config: LLMConfig,
     config: MockConfig,
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame:
     # provide a default progress callback if none is provided
     if progress_callback is None:
@@ -822,7 +822,7 @@ async def _create_table_rows_generator(
     non_context_size: int | None,
     n_workers: int,
     llm_config: LLMConfig,
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> AsyncGenerator[dict]:
     batch_size = 20  # generate 20 root table rows at a time
 
@@ -1253,7 +1253,7 @@ async def _sample_common(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ):
     tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
     config = MockConfig(tables)
@@ -1311,7 +1311,7 @@ def sample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1587,7 +1587,7 @@ async def _asample(
     top_p: float = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
-    progress_callback: Callable | None = None,
+    progress_callback: Callable[..., Awaitable[None]] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     return await _sample_common(
         tables=tables,
