@@ -1354,6 +1354,11 @@ def sample(
         n_workers (int): The number of concurrent workers making the LLM calls. Default is 10. The value is clamped to the range [1, 10].
             If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
+        progress_callback (Callable | None): Optional callback function to track progress during data generation.
+            If not provided, a default progress callback will display progress messages in the format:
+            "Generating table `table_name`: X%, Y rows, Zs, W.X rows/s"
+            The callback receives keyword arguments including: progress, total, message, percentage,
+            generated_rows, rows_per_second, elapsed_time, and is_final. Default is None.
 
     Returns:
         - pd.DataFrame: A single DataFrame containing the generated mock data, if only one table is provided.
@@ -1530,6 +1535,21 @@ def sample(
     )
     df_customers = data["customers"]
     df_orders = data["orders"]
+    ```
+
+    Example of using a custom progress callback:
+    ```python
+    from mostlyai import mock
+    import asyncio
+
+    async def custom_progress_callback(**kwargs):
+        print(f"Custom: {kwargs['message']}")
+
+    df = mock.sample(
+        tables=tables,
+        sample_size=10,
+        progress_callback=custom_progress_callback
+    )
     ```
     """
 
