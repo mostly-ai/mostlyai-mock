@@ -948,6 +948,7 @@ async def _create_table_rows_generator(
 
     n_completed_batches = 0
     n_yielded_sequences = 0
+    n_generated_rows = 0
     table_start_time = time.time()
     while n_yielded_sequences < sample_size:
         if n_completed_batches >= n_total_batches:
@@ -972,6 +973,7 @@ async def _create_table_rows_generator(
         rows = result
         for row_idx, row in enumerate(rows):
             yield (batch_idx, row)
+            n_generated_rows += 1
             if context_batches is None or row_idx == len(rows) - 1:
                 # in case of flat table, each row is considered a single sequence
                 # in case of linked table, all rows are considered a single sequence
@@ -986,7 +988,7 @@ async def _create_table_rows_generator(
                 table=name,
                 progress=n_completed_batches,
                 total=n_total_batches,
-                rows=n_yielded_sequences,
+                rows=n_generated_rows,
                 elapsed_time=round(elapsed_time, 2),
             )
         result_queue.task_done()
