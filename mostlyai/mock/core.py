@@ -880,6 +880,10 @@ async def _create_table_rows_generator(
         # +2 because LLM may not always count the rows correctly
         batch_sizes[-1] = sample_size - sum(batch_sizes[:-1]) + 2
 
+    # emit initial progress message right away
+    if progress_callback:
+        await progress_callback(table=name, progress=0, total=n_total_batches, rows=0)
+
     # initialize queues for async communication
     batch_queue = asyncio.PriorityQueue()
     result_queue = asyncio.Queue()
