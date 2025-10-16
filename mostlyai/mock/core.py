@@ -882,7 +882,7 @@ async def _create_table_rows_generator(
 
     # emit initial progress message right away
     if progress_callback:
-        await progress_callback(table=name, progress=0, total=n_total_batches, rows=0)
+        await progress_callback(table=name, progress=0, total=n_total_batches, rows=0, elapsed_time=0)
 
     # initialize queues for async communication
     batch_queue = asyncio.PriorityQueue()
