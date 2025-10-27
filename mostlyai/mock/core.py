@@ -1334,6 +1334,7 @@ def sample(
         tables (dict[str, dict]): The table specifications to generate mock data for. See examples for usage.
             Note: Avoid using double quotes (`"`) and other special characters in column names.
             Available dtypes: `string`, `integer`, `float`, `category`, `boolean`, `date`, `datetime`.
+            Primary key dtypes: `integer` → auto-increment (1, 2, 3, ...); `string` → LLM-generated unique IDs.
         sample_size (int | dict[str, int]): The number of rows to generate for each subject table.
             If a single integer is provided, the same number of rows will be generated for each subject table.
             If a dictionary is provided, the number of rows to generate for each subject table can be specified individually.
@@ -1456,6 +1457,32 @@ def sample(
     df_warehouses = data["warehouses"]
     df_orders = data["orders"]
     df_items = data["items"]
+    ```
+
+    Example of auto-increment integer primary keys (self-referencing table):
+    ```python
+    from mostlyai import mock
+
+    tables = {
+        "employees": {
+            "prompt": "Employees of a company",
+            "columns": {
+                "employee_id": {"dtype": "integer"},  # integer PK → auto-increment (1, 2, 3, ...)
+                "name": {"prompt": "first name and last name of the employee", "dtype": "string"},
+                "boss_id": {"dtype": "integer"},  # integer FK → references auto-incremented values
+                "role": {"prompt": "the role of the employee", "dtype": "string"},
+            },
+            "primary_key": "employee_id",
+            "foreign_keys": [
+                {
+                    "column": "boss_id",
+                    "referenced_table": "employees",
+                    "prompt": "each boss has at most 3 employees",
+                },
+            ],
+        }
+    }
+    df = mock.sample(tables=tables, sample_size=10, model="openai/gpt-5", n_workers=1)
     ```
 
     Example of enriching a single dataframe:
