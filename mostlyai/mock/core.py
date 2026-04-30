@@ -836,6 +836,10 @@ async def _create_table_rows_generator(
 
     llm_output_format = LLMOutputFormat.JSON if supports_structured_outputs(llm_config.model) else LLMOutputFormat.CSV
 
+    # Callers pass batch_size=None explicitly; that overrides the parameter default unless normalized here.
+    if batch_size is None:
+        batch_size = 20
+
     previous_rows = deque(maxlen=previous_rows_size)
 
     # derive data for augmentation
