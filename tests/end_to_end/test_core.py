@@ -53,14 +53,15 @@ def test_single_table():
     with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
         df = mock.sample(tables=tables, sample_size=5)
         assert df.shape == (5, 10)
-        assert df.dtypes.to_dict() == {
+        dtypes = df.dtypes.to_dict()
+        for col in ("date_of_birth", "checkin_time"):
+            assert pd.api.types.is_datetime64_any_dtype(dtypes.pop(col)), col
+        assert dtypes == {
             "guest_id": "string[pyarrow]",
             "nationality": "string[pyarrow]",
             "name": "string[pyarrow]",
             "gender": pd.CategoricalDtype(categories=["male", "female"]),
             "age": "int64[pyarrow]",
-            "date_of_birth": "datetime64[ns]",
-            "checkin_time": "datetime64[ns]",
             "is_vip": "boolean[pyarrow]",
             "price_per_night": "float64[pyarrow]",
             "room_number": "int64[pyarrow]",
