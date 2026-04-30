@@ -26,15 +26,15 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0.0,<3.0.0",
     "numpy>=1.26.3",
-    "pandas>=2.0.0",
+    "pandas>=2.0.0,<3.0.0",
     "pyarrow>=14.0.0",
-    "litellm>=1.67.0",
+    "litellm>=1.83.0",
     "tenacity>=9.1.2",
 ]
 
 [project.optional-dependencies]
 litellm-proxy = [
-    "litellm[proxy]>=1.67.0",
+    "litellm[proxy]>=1.83.0",
 ]
 mcp = [
     "fastmcp>=3.0.0,<4.0.0",
@@ -43,7 +43,7 @@ mcp = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.11",  # sync'ed with .pre-commit-config
+    "ruff>=0.15",  # sync'ed with .pre-commit-config
     "pre-commit>=4.0",
     "twine>=6.1",
     "ipykernel>=6.25",
@@ -51,11 +51,13 @@ dev = [
 docs = [
     "mkdocs>=1.6",
     "mkdocstrings[crystal, python]>=0.29",
+    # mkdocstrings-python 2.x expects griffe 2 / griffelib; handler still imports legacy `griffe` API.
+    "mkdocstrings-python>=1.16.2,<2",
     "mkdocs-material>=9.0",
     "mkdocs-llmstxt>=0.2",
-    "griffe>=1.0",
+    "griffe>=1.13,<2",
     "pymdown-extensions>=10.0",
-    "griffe-fieldz>=0.2",
+    "griffe-fieldz>=0.2,<0.5",
     "black>=25.0",
 ]
 
