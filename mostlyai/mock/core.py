@@ -251,7 +251,7 @@ async def _sample_table(
     llm_config: LLMConfig,
     config: MockConfig,
     progress_callback: Callable[..., Awaitable[None]] | None = None,
-    batch_size = None,
+    batch_size=None,
 ) -> pd.DataFrame:
     # provide a default progress callback if none is provided
     if progress_callback is None:
@@ -445,7 +445,6 @@ def _create_table_prompt(
     prompt += f"{verb.capitalize()} data for the Target Table `{name}`.\n\n"
     if n_rows is not None:
         prompt += f"Number of data rows to {verb}: `{n_rows}`.\n\n"
-
 
     if target_primary_key is not None:
         prompt += f"Add prefix to all values of Target Table Primary Key. The prefix is 'B{batch_idx}-'."
@@ -828,9 +827,8 @@ async def _create_table_rows_generator(
     n_workers: int,
     llm_config: LLMConfig,
     progress_callback: Callable[..., Awaitable[None]] | None = None,
-    batch_size: int | None = 20, # generate 20 root table rows at a time
+    batch_size: int | None = 20,  # generate 20 root table rows at a time
 ) -> AsyncGenerator[dict]:
-
     def supports_structured_outputs(model: str) -> bool:
         model = model.removeprefix("litellm_proxy/")
         supported_params = litellm.get_supported_openai_params(model=model) or []
@@ -1266,7 +1264,7 @@ async def _sample_common(
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
-    batch_size: int | None = None
+    batch_size: int | None = None,
 ):
     tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
     config = MockConfig(tables)
@@ -1302,7 +1300,7 @@ async def _sample_common(
             llm_config=llm_config,
             config=config,
             progress_callback=progress_callback,
-            batch_size=batch_size
+            batch_size=batch_size,
         )
         data[table_name] = df
 
@@ -1327,7 +1325,7 @@ def sample(
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
-    batch_size: int | None = None
+    batch_size: int | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     """
     Generate synthetic data from scratch or enrich existing data with new columns.
@@ -1617,7 +1615,7 @@ def sample(
             n_workers=n_workers,
             return_type=return_type,
             progress_callback=progress_callback,
-            batch_size=batch_size
+            batch_size=batch_size,
         )
         return future.result()
 
@@ -1635,7 +1633,7 @@ async def _asample(
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
-    batch_size: int | None = None
+    batch_size: int | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
     return await _sample_common(
         tables=tables,
@@ -1649,7 +1647,7 @@ async def _asample(
         n_workers=n_workers,
         return_type=return_type,
         progress_callback=progress_callback,
-        batch_size=batch_size
+        batch_size=batch_size,
     )
 
 
