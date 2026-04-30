@@ -42,6 +42,7 @@ class LLMOutputFormat(str, Enum):
 class LLMConfig(BaseModel):
     model: str
     api_key: str | None
+    api_base: str | None
     temperature: float
     top_p: float
 
@@ -684,6 +685,7 @@ async def _worker(
                 "top_p": llm_config.top_p,
                 "model": llm_config.model,
                 "api_key": llm_config.api_key,
+                "api_base": llm_config.api_base,
                 "stream": True,
             }
 
@@ -1255,6 +1257,7 @@ async def _sample_common(
     existing_data: dict[str, pd.DataFrame] | None = None,
     model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
+    api_base: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
     n_workers: int = 10,
@@ -1264,7 +1267,7 @@ async def _sample_common(
     tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
     config = MockConfig(tables)
 
-    llm_config = LLMConfig(model=model, api_key=api_key, temperature=temperature, top_p=top_p)
+    llm_config = LLMConfig(model=model, api_key=api_key, api_base=api_base, temperature=temperature, top_p=top_p)
 
     sample_size: dict[str, int] = _harmonize_sample_size(sample_size, config)
     primary_keys = {table_name: table_config.primary_key for table_name, table_config in config.root.items()}
@@ -1313,6 +1316,7 @@ def sample(
     existing_data: dict[str, pd.DataFrame] | None = None,
     model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
+    api_base: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
     n_workers: int = 10,
@@ -1354,6 +1358,7 @@ def sample(
             - `anthropic/claude-3-7-sonnet-latest`
             See https://docs.litellm.ai/docs/providers/ for more options.
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
+        api_base (str | None): Override the API base URL. Useful for OpenAI-compatible self-hosted endpoints. If not provided, LiteLLM uses the default endpoint for the chosen model.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
         top_p (float): The top-p value to use for the LLM. Default is 0.95.
         n_workers (int): The number of concurrent workers making the LLM calls. Default is 10. The value is clamped to the range [1, 10].
@@ -1600,6 +1605,7 @@ def sample(
             existing_data=existing_data,
             model=model,
             api_key=api_key,
+            api_base=api_base,
             temperature=temperature,
             top_p=top_p,
             n_workers=n_workers,
@@ -1616,6 +1622,7 @@ async def _asample(
     existing_data: dict[str, pd.DataFrame] | None = None,
     model: str = "openai/gpt-5-nano",
     api_key: str | None = None,
+    api_base: str | None = None,
     temperature: float = 1.0,
     top_p: float = 0.95,
     n_workers: int = 10,
@@ -1628,6 +1635,7 @@ async def _asample(
         existing_data=existing_data,
         model=model,
         api_key=api_key,
+        api_base=api_base,
         temperature=temperature,
         top_p=top_p,
         n_workers=n_workers,

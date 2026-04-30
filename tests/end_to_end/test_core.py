@@ -105,6 +105,27 @@ def test_existing_data():
         mock_acompletion.assert_not_called()
 
 
+def test_api_base_forwarded_to_litellm():
+    # api_base flows through to litellm.acompletion
+    captured_kwargs = {}
+
+    def litellm_completion_with_mock_response(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        mock_response = '{"rows": [{"name": "John Doe"}]}'
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
+
+    tables = {
+        "guests": {
+            "columns": {
+                "name": {"dtype": "string"},
+            },
+        }
+    }
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        mock.sample(tables=tables, sample_size=1, api_base="https://example.test/v1")
+    assert captured_kwargs.get("api_base") == "https://example.test/v1"
+
+
 def test_auto_increment_with_foreign_keys():
     # test auto-increment integer PKs with self-referencing FK: 2 workers, 4 user rows, 4 task rows
     # note: LLM generates string PKs which are then remapped to integers in post-processing
