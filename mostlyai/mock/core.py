@@ -1369,11 +1369,11 @@ def sample(
             - `openai/gpt-5-nano` (default; fast, and smart)
             - `openai/gpt-5-mini` (slower, but smarter)
             - `openai/gpt-5` (slowest, but smartest)
-            - `gemini/gemini-2.0-flash`
-            - `gemini/gemini-2.5-flash-preview-04-17`
-            - 'groq/gemma2-9b-it`
-            - `groq/llama-3.3-70b-versatile`
-            - `anthropic/claude-3-7-sonnet-latest`
+            - `openai/gpt-6-luna`
+            - `anthropic/claude-haiku-5-5`
+            - `anthropic/claude-sonnet-5-5`
+            - `gemini/gemini-3.8-flash`
+            - `groq/openai/gpt-oss-120b`
             See https://docs.litellm.ai/docs/providers/ for more options.
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         api_base (str | None): Override the API base URL. Useful for OpenAI-compatible self-hosted endpoints. If not provided, LiteLLM uses the default endpoint for the chosen model.
