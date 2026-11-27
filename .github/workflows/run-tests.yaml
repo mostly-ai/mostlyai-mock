@@ -29,6 +29,10 @@ jobs:
         run: |
           uv sync --frozen
 
+      - name: Lint | Type Check (ty)
+        run: |
+          uv run --no-sync ty check
+
       - name: Test | End-to-End Tests
         run: |
           uv run --no-sync pytest -vv tests/end_to_end

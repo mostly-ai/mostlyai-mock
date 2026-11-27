@@ -136,9 +136,9 @@ class MockConfig(RootModel[dict[str, "TableConfig"]]):
                     )
         return self
 
-    def get_dependency_mappings(self) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
-        child_to_parents = {}
-        parent_to_children = {}
+    def get_dependency_mappings(self) -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
+        child_to_parents: dict[str, set[str]] = {}
+        parent_to_children: dict[str, set[str]] = {}
 
         for table_name in self.root:
             child_to_parents[table_name] = set()
@@ -240,7 +240,7 @@ async def _sample_table(
     prompt: str,
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig],
-    primary_keys: dict[str, str],
+    primary_keys: dict[str, str | None],
     data: dict[str, pd.DataFrame],
     sample_size: int | None,
     previous_rows_size: int,
@@ -321,7 +321,7 @@ def _create_table_prompt(
     name: str,
     prompt: str,
     columns: dict[str, ColumnConfig],
-    primary_keys: dict[str, str],
+    primary_keys: dict[str, str | None],
     batch_idx: int,
     batch_size: int | None,
     foreign_keys: list[ForeignKeyConfig],
@@ -505,7 +505,7 @@ def _create_table_prompt(
     if existing_data is not None:
         prompt += f" Only include the following columns in the {llm_output_format.value} string: {list(columns.keys() - existing_data.columns)}."
 
-    if llm_output_format == LLMOutputFormat.CSV and batch_size > 10:
+    if llm_output_format == LLMOutputFormat.CSV and batch_size is not None and batch_size > 10:
         prompt += " Additionally, add column called `_ROW_IDX` that is a counter from 1 to the number of rows generated so far within current batch."
 
     prompt += "\n"
@@ -567,7 +567,7 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
 
     buffer = []
-    header = None
+    header: list[str] | None = None
     async for chunk in response:
         delta = chunk.choices[0].delta.content
         if delta is None:
@@ -590,7 +590,7 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
                     # value_1,value_2,value_3\n
                     #                        ** <- end of data row
                     yield dict(zip(header, row))
-    if buffer:
+    if buffer and header is not None:
         # last row might not finish with a newline, in which case the buffer would not be empty here
         try:
             last_row = buffer_to_row(buffer)
@@ -606,7 +606,7 @@ def _create_structured_output_schema(
     primary_key: str | None,
     foreign_keys: list[ForeignKeyConfig],
 ) -> type[BaseModel]:
-    def create_annotation(column_config: ColumnConfig, is_int_pk_or_fk: bool = False) -> type:
+    def create_annotation(column_config: ColumnConfig, is_int_pk_or_fk: bool = False) -> Any:
         if column_config.values or column_config.dtype is DType.CATEGORY:
             return Literal[tuple(column_config.values)]  # type: ignore
         # ensure integer primary keys and foreign keys are treated as strings
@@ -627,11 +627,11 @@ def _create_structured_output_schema(
     for column_name, column_config in columns.items():
         if existing_data is not None and column_name in existing_data.columns:
             continue  # skip columns that already exist in existing data
-        is_int_pk = primary_key and column_name == primary_key and column_config.dtype == DType.INTEGER
+        is_int_pk = primary_key is not None and column_name == primary_key and column_config.dtype == DType.INTEGER
         is_int_fk = any(fk.column == column_name for fk in foreign_keys) and column_config.dtype == DType.INTEGER
         annotation = create_annotation(column_config, is_int_pk or is_int_fk)
         fields[column_name] = (annotation, Field(...))
-    TableRow = create_model("TableRow", **fields)
+    TableRow = create_model("TableRow", **fields)  # ty: ignore[no-matching-overload]
     TableRows = create_model("TableRows", rows=(list[TableRow], ...))
     return TableRows
 
@@ -642,7 +642,7 @@ async def _worker(
     prompt: str,
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig],
-    primary_keys: dict[str, str],
+    primary_keys: dict[str, str | None],
     previous_rows: deque[dict],
     batch_queue: asyncio.Queue,
     result_queue: asyncio.Queue,
@@ -819,7 +819,7 @@ async def _create_table_rows_generator(
     prompt: str,
     columns: dict[str, ColumnConfig],
     foreign_keys: list[ForeignKeyConfig],
-    primary_keys: dict[str, str],
+    primary_keys: dict[str, str | None],
     data: dict[str, pd.DataFrame],
     sample_size: int | None,
     previous_rows_size: int,
@@ -828,7 +828,7 @@ async def _create_table_rows_generator(
     llm_config: LLMConfig,
     progress_callback: Callable[..., Awaitable[None]] | None = None,
     batch_size: int | None = 20,  # generate 20 root table rows at a time
-) -> AsyncGenerator[dict]:
+) -> AsyncGenerator[tuple[int, dict]]:
     def supports_structured_outputs(model: str) -> bool:
         model = model.removeprefix("litellm_proxy/")
         supported_params = litellm.get_supported_openai_params(model=model) or []
@@ -872,6 +872,7 @@ async def _create_table_rows_generator(
             non_context_data[non_context_table_name] = data[non_context_table_name]
 
     # calculate ideal batch size that spreads the workload evenly across workers
+    assert sample_size is not None
     ideal_batch_size = max(math.ceil(sample_size / n_workers), 5)
     # never increase batch_size beyond initial value
     # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
@@ -919,7 +920,7 @@ async def _create_table_rows_generator(
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
             non_context_batch = {
-                table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
+                table_name: df.sample(frac=1.0).iloc[:non_context_size] for table_name, df in non_context_data.items()
             }
 
         task = {
@@ -1026,7 +1027,7 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
         series = series.map(lambda x: False if str(x).lower() == "false" else x)
         series = pd.to_numeric(series, errors="coerce").astype("boolean[pyarrow]")
     elif column_config.dtype is DType.CATEGORY:
-        series = pd.Categorical(series, categories=column_config.values)
+        series = pd.Series(pd.Categorical(series, categories=column_config.values), index=series.index)
     else:
         series = series.astype("string[pyarrow]")
     return series
@@ -1055,7 +1056,7 @@ def _get_integer_pk_fk_columns(
 
 
 async def _convert_table_rows_generator_to_df(
-    table_rows_generator: AsyncGenerator[dict],
+    table_rows_generator: AsyncGenerator[tuple[int, dict]],
     columns: dict[str, ColumnConfig],
     primary_key: str | None = None,
     foreign_keys: list[ForeignKeyConfig] | None = None,
@@ -1076,11 +1077,11 @@ async def _convert_table_rows_generator_to_df(
         return df
 
     # consume entire generator
-    items = [{"batch_idx": batch_idx, "row": row} async for batch_idx, row in table_rows_generator]
+    items = [(batch_idx, row) async for batch_idx, row in table_rows_generator]
     # sort items by batch_idx to maintain order (relevant especially for keeping the order of existing data)
-    items = sorted(items, key=lambda x: x["batch_idx"])
+    items = sorted(items, key=lambda x: x[0])
     # extract rows and convert to DataFrame
-    rows = [item["row"] for item in items]
+    rows = [row for _, row in items]
     df = pd.DataFrame(rows)
     # harmonize dtypes
     df = align_df_dtypes_with_mock_dtypes(df, columns)
@@ -1272,8 +1273,7 @@ async def _sample_common(
     progress_callback: Callable[..., Awaitable[None]] | None = None,
     batch_size: int | None = None,
 ):
-    tables: dict[str, TableConfig] = _harmonize_tables(tables, existing_data)
-    config = MockConfig(tables)
+    config = MockConfig(_harmonize_tables(tables, existing_data))
 
     llm_config = LLMConfig(model=model, api_key=api_key, api_base=api_base, temperature=temperature, top_p=top_p)
 

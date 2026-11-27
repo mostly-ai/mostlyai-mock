@@ -73,6 +73,7 @@ async def mock_data(
         return_type="dict",
         progress_callback=ctx.report_progress,
     )
+    assert isinstance(data, dict)
     locations = _store_locally(data)
     return locations
 
