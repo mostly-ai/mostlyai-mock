@@ -127,6 +127,32 @@ def test_api_base_forwarded_to_litellm():
     assert captured_kwargs.get("api_base") == "https://example.test/v1"
 
 
+@pytest.mark.parametrize(
+    "model, top_p, expected_effort, expect_top_p",
+    [
+        ("openai/gpt-4.1-nano", 0.95, None, True),
+        ("openai/gpt-4.1-nano", None, None, False),
+        ("openai/gpt-5-nano", 0.95, "minimal", False),
+        ("openai/gpt-6-luna", 0.95, "none", False),
+        ("openai/o3", 0.95, "low", False),
+        ("anthropic/claude-haiku-5-5", 0.95, None, False),
+    ],
+)
+def test_reasoning_effort_and_top_p_forwarded_to_litellm(model, top_p, expected_effort, expect_top_p):
+    captured_kwargs = {}
+
+    def litellm_completion_with_mock_response(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        mock_response = '{"rows": [{"name": "John Doe"}]}'
+        return litellm_completion(*args, **kwargs, mock_response=mock_response)
+
+    tables = {"guests": {"columns": {"name": {"dtype": "string"}}}}
+    with patch("mostlyai.mock.core.litellm.acompletion", side_effect=litellm_completion_with_mock_response):
+        mock.sample(tables=tables, sample_size=1, model=model, top_p=top_p)
+    assert captured_kwargs.get("reasoning_effort") == expected_effort
+    assert ("top_p" in captured_kwargs) is expect_top_p
+
+
 def test_auto_increment_with_foreign_keys():
     # test auto-increment integer PKs with self-referencing FK: 2 workers, 4 user rows, 4 task rows
     # note: LLM generates string PKs which are then remapped to integers in post-processing

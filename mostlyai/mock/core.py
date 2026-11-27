@@ -18,6 +18,7 @@ import asyncio
 import concurrent.futures
 import json
 import math
+import re
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -44,7 +45,26 @@ class LLMConfig(BaseModel):
     api_key: str | None
     api_base: str | None
     temperature: float
-    top_p: float
+    top_p: float | None
+
+
+def _reasoning_effort(model: str) -> str | None:
+    """Pick the lowest reasoning effort for OpenAI reasoning models; None for all other models."""
+    model_only = model.split("/")[-1]
+    if re.fullmatch(r"o\d+(-.*)?", model_only):
+        return "low"
+    match = re.match(r"gpt-(\d+)", model_only)
+    if match and int(match.group(1)) >= 5:
+        # newer models (e.g. gpt-5.4+, gpt-6-luna) accept "none" but reject "minimal"
+        model_info = litellm.model_cost.get(model) or litellm.model_cost.get(model_only) or {}
+        return "none" if model_info.get("supports_none_reasoning_effort") else "minimal"
+    return None
+
+
+def _supports_top_p(model: str, reasoning_effort: str | None) -> bool:
+    """OpenAI reasoning models and Anthropic Claude models reject top_p."""
+    model_only = model.split("/")[-1]
+    return reasoning_effort is None and not model_only.startswith("claude")
 
 
 class MockConfig(RootModel[dict[str, "TableConfig"]]):
@@ -691,23 +711,11 @@ async def _worker(
                 "stream": True,
             }
 
-            # support for openai reasoning models
-            model_only = llm_config.model.split("/")[-1] if "/" in llm_config.model else llm_config.model
-            reasoning_effort = (
-                "low"
-                if (model_only.startswith("o") and (model_only[1:].isdigit() or model_only[1:].split("-")[0].isdigit()))
-                else "minimal"
-                if (
-                    model_only.startswith("gpt-")
-                    and model_only.split("-")[1].isdigit()
-                    and int(model_only.split("-")[1]) >= 5
-                )
-                else None
-            )
-
+            reasoning_effort = _reasoning_effort(llm_config.model)
             if reasoning_effort:
-                litellm_kwargs.pop("top_p")
                 litellm_kwargs["reasoning_effort"] = reasoning_effort
+            if llm_config.top_p is None or not _supports_top_p(llm_config.model, reasoning_effort):
+                litellm_kwargs.pop("top_p")
 
             # construct messages
             system_prompt = _create_system_prompt(llm_output_format)
@@ -1267,7 +1275,7 @@ async def _sample_common(
     api_key: str | None = None,
     api_base: str | None = None,
     temperature: float = 1.0,
-    top_p: float = 0.95,
+    top_p: float | None = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
@@ -1327,7 +1335,7 @@ def sample(
     api_key: str | None = None,
     api_base: str | None = None,
     temperature: float = 1.0,
-    top_p: float = 0.95,
+    top_p: float | None = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
@@ -1370,7 +1378,7 @@ def sample(
         api_key (str | None): The API key to use for the LLM. If not provided, LiteLLM will take it from the environment variables.
         api_base (str | None): Override the API base URL. Useful for OpenAI-compatible self-hosted endpoints. If not provided, LiteLLM uses the default endpoint for the chosen model.
         temperature (float): The temperature to use for the LLM. Default is 1.0.
-        top_p (float): The top-p value to use for the LLM. Default is 0.95.
+        top_p (float | None): The top-p value to use for the LLM. Default is 0.95. Ignored for models that reject it (OpenAI reasoning models, Anthropic Claude); pass None to never send it.
         n_workers (int): The number of concurrent workers making the LLM calls. Default is 10. The value is clamped to the range [1, 10].
             If n_workers is 1, the generation of batches becomes sequential and certain features for better data consistency are enabled.
         return_type (Literal["auto", "dict"]): The format of the returned data. Default is "auto".
@@ -1635,7 +1643,7 @@ async def _asample(
     api_key: str | None = None,
     api_base: str | None = None,
     temperature: float = 1.0,
-    top_p: float = 0.95,
+    top_p: float | None = 0.95,
     n_workers: int = 10,
     return_type: Literal["auto", "dict"] = "auto",
     progress_callback: Callable[..., Awaitable[None]] | None = None,
