@@ -172,19 +172,17 @@ class ColumnConfig(BaseModel):
 
     @model_validator(mode="before")
     def set_default_dtype(cls, data):
-        if isinstance(data, dict):
-            if "dtype" not in data:
-                if data.get("values"):
-                    data["dtype"] = DType.CATEGORY
-                else:
-                    data["dtype"] = DType.STRING
+        if isinstance(data, dict) and "dtype" not in data:
+            if data.get("values"):
+                data["dtype"] = DType.CATEGORY
+            else:
+                data["dtype"] = DType.STRING
         return data
 
     @model_validator(mode="after")
     def ensure_values_are_unique(self) -> ColumnConfig:
-        if self.values:
-            if len(self.values) != len(set(self.values)):
-                raise ValueError("Values must be unique")
+        if self.values and len(self.values) != len(set(self.values)):
+            raise ValueError("Values must be unique")
         return self
 
     @model_validator(mode="after")
@@ -354,14 +352,16 @@ def _create_table_prompt(
             column: spec for column, spec in column_specifications.items() if column not in existing_data.columns
         }
     # ensure primary keys stay as string in the prompt, even if dtype is integer
-    if target_primary_key and target_primary_key in column_specifications:
-        if columns[target_primary_key].dtype == DType.INTEGER:
-            column_specifications[target_primary_key]["dtype"] = DType.STRING.value
+    if (
+        target_primary_key
+        and target_primary_key in column_specifications
+        and columns[target_primary_key].dtype == DType.INTEGER
+    ):
+        column_specifications[target_primary_key]["dtype"] = DType.STRING.value
     # ensure foreign keys referencing integer primary keys also stay as string in the prompt
     for fk in foreign_keys:
-        if fk.column in column_specifications:
-            if columns[fk.column].dtype == DType.INTEGER:
-                column_specifications[fk.column]["dtype"] = DType.STRING.value
+        if fk.column in column_specifications and columns[fk.column].dtype == DType.INTEGER:
+            column_specifications[fk.column]["dtype"] = DType.STRING.value
     prompt += f"{json.dumps(column_specifications, indent=2)}\n\n"
 
     # add previous rows as context to help the LLM generate consistent data
@@ -546,18 +546,18 @@ async def _yield_rows_from_json_chunks_stream(response: litellm.CustomStreamWrap
             elif char == "{" and not in_row_json:
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #           *                       <- start of single row json stream
-                buffer = list("{")
+                buffer = ["{"]
                 in_row_json = True
             elif char == "}":
                 # {"rows": [{"name": "Jo\}h\{n"}]}
                 #                        *     * *  <- any of these
                 try:
                     row = buffer_to_row(buffer)
-                except Exception:
+                except Exception:  # noqa: BLE001, S112
                     # in case of any error, silently drop the row
                     continue
                 finally:
-                    buffer = list()
+                    buffer = []
                     in_row_json = False
                 yield row
 
@@ -566,7 +566,7 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
     def buffer_to_row(buffer: list[str]) -> list[str]:
         return pd.read_csv(StringIO("".join(buffer)), header=None).astype(str).iloc[0].to_list()
 
-    buffer = list()
+    buffer = []
     header = None
     async for chunk in response:
         delta = chunk.choices[0].delta.content
@@ -577,11 +577,11 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
             if char == "\n":
                 try:
                     row = buffer_to_row(buffer)
-                except Exception:
+                except Exception:  # noqa: BLE001, S112
                     # in case of any error, silently drop the row
                     continue
                 finally:
-                    buffer = list()
+                    buffer = []
                 if header is None:
                     # column1,column2,column3\n
                     #                        ** <- end of header row
@@ -595,7 +595,7 @@ async def _yield_rows_from_csv_chunks_stream(response: litellm.CustomStreamWrapp
         try:
             last_row = buffer_to_row(buffer)
             yield dict(zip(header, last_row))
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             # in case of any error, silently drop the row
             pass
 
@@ -797,7 +797,7 @@ async def _worker(
                 row_existing_part = existing_batch.iloc[row_idx].to_dict() if existing_batch is not None else {}
                 row = {**row_generated_part, **row_existing_part}
                 # keep columns order according to user's spec
-                row = {column: row[column] for column in columns.keys()}
+                row = {column: row[column] for column in columns}
                 rows.append(row)
 
             # track previous rows for improved data consistency, in case of sequential generation
@@ -873,10 +873,9 @@ async def _create_table_rows_generator(
 
     # calculate ideal batch size that spreads the workload evenly across workers
     ideal_batch_size = max(math.ceil(sample_size / n_workers), 5)
-    if ideal_batch_size < batch_size:
-        # never increase batch_size beyond initial value
-        # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
-        batch_size = ideal_batch_size
+    # never increase batch_size beyond initial value
+    # this is especially important for sequential tables, where batch_size is currently assumed to be 1 everywhere
+    batch_size = min(batch_size, ideal_batch_size)
 
     # calculate batch_sizes
     assert sample_size is not None, "sample_size should have been filled by this point"
@@ -1014,7 +1013,7 @@ def _align_series_dtypes_with_column_config(series: pd.Series, column_config: Co
         def harmonize_datetime(x: Any):
             try:
                 return dateutil.parser.parse(str(x))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return pd.NaT
 
         series = pd.to_datetime(series.apply(harmonize_datetime), errors="coerce")
@@ -1164,12 +1163,13 @@ def _harmonize_existing_data(
                 )
 
             # ensure that the existing data has values allowed by the column config
-            if existing_column_config.values:
-                if not set(existing_table[existing_column].unique()).issubset(existing_column_config.values):
-                    raise ValueError(
-                        f"Existing data column '{existing_column}' in table '{existing_table_name}' has values disallowed by the column config. "
-                        f"Ensure that the existing data is consistent with the mock configuration."
-                    )
+            if existing_column_config.values and not set(existing_table[existing_column].unique()).issubset(
+                existing_column_config.values
+            ):
+                raise ValueError(
+                    f"Existing data column '{existing_column}' in table '{existing_table_name}' has values disallowed by the column config. "
+                    f"Ensure that the existing data is consistent with the mock configuration."
+                )
 
         # ensure that the existing data has unique primary keys
         existing_table_primary_key = existing_table_config.primary_key
@@ -1249,7 +1249,9 @@ def _postprocess_table(
         # map FK values from strings to integers
         mapping = pk_mappings[fk.referenced_table]
         df[fk.column] = (
-            df[fk.column].apply(lambda val: mapping.get(str(val)) if pd.notna(val) else None).astype("int64[pyarrow]")
+            df[fk.column]
+            .apply(lambda val, mapping=mapping: mapping.get(str(val)) if pd.notna(val) else None)
+            .astype("int64[pyarrow]")
         )
 
     return df

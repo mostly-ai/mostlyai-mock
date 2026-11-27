@@ -26,6 +26,7 @@ pip install -U mostlyai-mock
 
 ```python
 import os
+
 os.environ["OPENAI_API_KEY"] = "your-api-key"
 # os.environ["GEMINI_API_KEY"] = "your-api-key"
 # os.environ["GROQ_API_KEY"] = "your-api-key"
@@ -50,12 +51,12 @@ tables = {
             "checkin_time": {"prompt": "the check in timestamp of the guest; may 2025", "dtype": "datetime"},
             "is_vip": {"prompt": "is the guest a VIP", "dtype": "boolean"},
             "price_per_night": {"prompt": "price paid per night, in EUR", "dtype": "float"},
-            "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]}
+            "room_number": {"prompt": "room number", "dtype": "integer", "values": [101, 102, 103, 201, 202, 203, 204]},
         },
     }
 }
 df = mock.sample(
-    tables=tables,   # provide table and column definitions
+    tables=tables,  # provide table and column definitions
     sample_size=10,  # generate 10 records
     model="openai/gpt-5-nano",  # select the LLM model (optional)
 )
@@ -227,16 +228,14 @@ tables = {
         "primary_key": "guest_id",
     }
 }
-existing_guests = pd.DataFrame({
-    "guest_id": [1, 2, 3],
-    "name": ["Anna Schmidt", "Marco Rossi", "Sophie Dupont"],
-    "nationality": ["DE", "IT", "FR"],
-})
-df = mock.sample(
-    tables=tables,
-    existing_data={"guests": existing_guests},
-    model="openai/gpt-5-nano"
+existing_guests = pd.DataFrame(
+    {
+        "guest_id": [1, 2, 3],
+        "name": ["Anna Schmidt", "Marco Rossi", "Sophie Dupont"],
+        "nationality": ["DE", "IT", "FR"],
+    }
 )
+df = mock.sample(tables=tables, existing_data={"guests": existing_guests}, model="openai/gpt-5-nano")
 print(df)
 #   guest_id           name nationality  gender  age  room_number is_vip
 # 0        1   Anna Schmidt          DE  female   30          102  False
