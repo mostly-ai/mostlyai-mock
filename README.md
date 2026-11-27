@@ -19,7 +19,7 @@ Use LLMs to generate any Tabular Data towards your needs. Create from scratch, e
 1. Install the latest version of the `mostlyai-mock` python package.
 
 ```bash
-pip install -U mostlyai-mock
+uv pip install -U mostlyai-mock  # or: pip install -U mostlyai-mock
 ```
 
 2. Set the API key of your LLM endpoint (if not done yet)
@@ -28,11 +28,12 @@ pip install -U mostlyai-mock
 import os
 
 os.environ["OPENAI_API_KEY"] = "your-api-key"
+# os.environ["ANTHROPIC_API_KEY"] = "your-api-key"
 # os.environ["GEMINI_API_KEY"] = "your-api-key"
 # os.environ["GROQ_API_KEY"] = "your-api-key"
 ```
 
-Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`.
+Note: You will need to obtain your API key directly from the LLM service provider (e.g. for Open AI from [here](https://platform.openai.com/api-keys)). The LLM endpoint will be determined by the chosen `model` when making calls to `mock.sample`, e.g. `openai/gpt-5-nano` (default), `openai/gpt-6-luna`, `anthropic/claude-haiku-5-5` or `gemini/gemini-3.8-flash`. Any [LiteLLM chat model](https://docs.litellm.ai/docs/providers/) works; `top_p` is not sent to models that reject it (OpenAI reasoning models, Anthropic Claude).
 
 3. Create your first basic mock table from scratch
 
@@ -271,4 +272,4 @@ For example:
 Troubleshooting:
 1. If the MCP Client fails to detect the MCP Server, provide the absolute path in the `command` field, for example: `/Users/johnsmith/.local/bin/uvx`
 2. To debug MCP Server issues, you can use MCP Inspector by running: `npx @modelcontextprotocol/inspector -- uvx --from mostlyai-mock[mcp] mcp-server`
-3. In order to develop locally, modify the configuration by replacing `"command": "uv"` (or use the full path to `uv` if needed) and `"args": ["--directory", "/Users/johnsmith/mostlyai-mock", "run", "--extra", "mcp", "mcp-server"]`
+3. In order to develop locally, change the configuration to `"command": "uv"` (or the full path to `uv` if needed) and `"args": ["--directory", "/Users/johnsmith/mostlyai-mock", "run", "--extra", "mcp", "mcp-server"]`
