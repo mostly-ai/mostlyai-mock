@@ -42,7 +42,7 @@ mcp = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.15",  # sync'ed with .pre-commit-config
+    "ruff>=0.17",  # sync'ed with .pre-commit-config
     "pre-commit>=4.0",
     "twine>=6.1",
     "ipykernel>=6.25",
