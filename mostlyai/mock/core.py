@@ -920,7 +920,7 @@ async def _create_table_rows_generator(
         non_context_batch: dict[str, pd.DataFrame] | None = None
         if non_context_data:
             non_context_batch = {
-                table_name: df.sample(frac=1.0).head(non_context_size) for table_name, df in non_context_data.items()
+                table_name: df.sample(frac=1.0).iloc[:non_context_size] for table_name, df in non_context_data.items()
             }
 
         task = {
