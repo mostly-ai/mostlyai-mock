@@ -2,7 +2,7 @@
 name = "mostlyai-mock"
 version = "0.3.2"
 description = "Synthetic Mock Data"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 readme = "README.md"
 license = "Apache-2.0"
 classifiers = [
@@ -13,7 +13,6 @@ classifiers = [
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Healthcare Industry",
     "Intended Audience :: Telecommunications Industry",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -91,11 +90,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
 extend-select = ["I", "UP"]
+# keep public `str, Enum` classes (StrEnum changes str()/format() behavior)
+ignore = ["UP042"]
 
 [tool.ty.src]
 include = ["mostlyai"]
